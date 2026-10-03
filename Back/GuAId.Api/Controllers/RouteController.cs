@@ -10,8 +10,6 @@ namespace GuAId.Api.Controllers;
 [Route("api/[controller]")]
 public sealed class RouteController : ControllerBase
 {
-    private const string PlaceholderApiKey = "сюда_вставишь_свой_настоящий_ключ";
-
     private const string SystemPrompt =
         """
         You are a travel guide that builds a route for a map.
@@ -55,7 +53,7 @@ public sealed class RouteController : ControllerBase
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
-        if (string.IsNullOrWhiteSpace(_apiKey) || _apiKey == PlaceholderApiKey)
+        if (string.IsNullOrWhiteSpace(_apiKey))
         {
             return Problem(
                 detail: "Set OpenAI:ApiKey in appsettings.Development.json.",
