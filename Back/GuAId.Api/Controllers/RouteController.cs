@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.Net.Http.Json;
 using System.Text.Json;
 using GuAId.Api.Models;
 using Microsoft.AspNetCore.Mvc;
@@ -16,12 +17,14 @@ public sealed class RouteController : ControllerBase
         The user describes a place and what they want to do.
         Reply with one JSON object and no other text. Use this shape:
         {
+          "city": "city name",
           "locations": [
             { "name": "place name" }
           ]
         }
-        locations is an ordered list of real places.
-        name is the place name in English only.
+        city is the main city of the route, in English.
+        locations is an ordered list of real places in that city.
+        name is the place name in English only, without the city.
         Do not add other fields.
         """;
 
@@ -30,12 +33,16 @@ public sealed class RouteController : ControllerBase
         PropertyNameCaseInsensitive = true
     };
 
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly string? _apiKey;
+    private readonly string? _googleApiKey;
     private readonly string _model;
 
-    public RouteController(IConfiguration configuration)
+    public RouteController(IConfiguration configuration, IHttpClientFactory httpClientFactory)
     {
+        _httpClientFactory = httpClientFactory;
         _apiKey = configuration["OpenAI:ApiKey"];
+        _googleApiKey = configuration["Google:ApiKey"];
         _model = string.IsNullOrWhiteSpace(configuration["OpenAI:Model"])
             ? "gpt-4o-mini"
             : configuration["OpenAI:Model"]!;
@@ -99,6 +106,30 @@ public sealed class RouteController : ControllerBase
                     statusCode: StatusCodes.Status502BadGateway);
             }
 
+            if (string.IsNullOrWhiteSpace(_googleApiKey))
+            {
+                return Problem(
+                    detail: "Set Google:ApiKey in appsettings.Development.json.",
+                    statusCode: StatusCodes.Status500InternalServerError);
+            }
+
+            var httpClient = _httpClientFactory.CreateClient();
+            var lookups = route.Locations
+                .Where(location => !string.IsNullOrWhiteSpace(location.Name))
+                .Select(location => FindCoordinatesAsync(httpClient, location.Name, route.City, cancellationToken))
+                .ToArray();
+
+            Location?[] resolved;
+            try
+            {
+                resolved = await Task.WhenAll(lookups);
+            }
+            catch (HttpRequestException ex)
+            {
+                return Problem(detail: ex.Message, statusCode: StatusCodes.Status502BadGateway);
+            }
+
+            route.Locations = resolved.OfType<Location>().ToList();
             return Ok(route);
         }
         catch (JsonException)
@@ -107,5 +138,58 @@ public sealed class RouteController : ControllerBase
                 detail: "The model returned JSON that does not match RouteResponse.",
                 statusCode: StatusCodes.Status502BadGateway);
         }
+    }
+
+    private async Task<Location?> FindCoordinatesAsync(
+        HttpClient httpClient,
+        string name,
+        string city,
+        CancellationToken cancellationToken)
+    {
+        var textQuery = string.IsNullOrWhiteSpace(city) ? name : $"{name}, {city}";
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "https://places.googleapis.com/v1/places:searchText");
+        request.Headers.Add("X-Goog-Api-Key", _googleApiKey);
+        request.Headers.Add("X-Goog-FieldMask", "places.location");
+        request.Content = JsonContent.Create(new { textQuery });
+
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new HttpRequestException(
+                $"Google Places returned {(int)response.StatusCode}: {error}");
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<PlacesSearchResponse>(
+            JsonOptions,
+            cancellationToken);
+        var coordinates = payload?.Places?.FirstOrDefault()?.Location;
+        if (coordinates is null)
+            return null;
+
+        return new Location
+        {
+            Name = name,
+            Lat = coordinates.Latitude,
+            Lng = coordinates.Longitude
+        };
+    }
+
+    private sealed class PlacesSearchResponse
+    {
+        public List<PlaceHit>? Places { get; set; }
+    }
+
+    private sealed class PlaceHit
+    {
+        public PlaceCoordinates? Location { get; set; }
+    }
+
+    private sealed class PlaceCoordinates
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
     }
 }
