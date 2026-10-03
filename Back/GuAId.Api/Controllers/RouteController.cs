@@ -13,19 +13,27 @@ public sealed class RouteController : ControllerBase
 {
     private const string SystemPrompt =
         """
-        You are a travel guide that builds a route for a map.
-        The user describes a place and what they want to do.
+        You are a travel guide that proposes the next stop on a map.
+        The user describes where they are and what they want.
         Reply with one JSON object and no other text. Use this shape:
         {
-          "city": "city name",
+          "text": "short reply to the user",
+          "city": "city name or empty string",
           "locations": [
-            { "name": "place name" }
+            { "name": "place name", "description": "why this place fits this step" }
           ]
         }
-        city is the main city of the route, in English.
-        locations is an ordered list of real places in that city.
+        Start check: a start is a place the user is at or the place the route starts from, such as "I am at the station" or "we start from the hotel".
+        If the user did not give a start, do not propose any stops.
+        Then text asks them, in their language, to name the starting point, city is "", and locations is [].
+        If the start is clear, city is that city in English, or "" if you do not know it.
+        locations then has exactly 5 real places near that start that match the request.
+        These are options for the next stop only. Do not include the start itself.
+        Prefer the closest interesting places to the start.
         name is the place name in English only, without the city.
-        Do not add other fields.
+        description is one short sentence, in the user's language, saying why you suggest this place at this step.
+        text is a short reply in the user's language.
+        Do not add other fields. Do not invent coordinates or place ids.
         """;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -106,6 +114,19 @@ public sealed class RouteController : ControllerBase
                     statusCode: StatusCodes.Status502BadGateway);
             }
 
+            route.Text ??= "";
+            route.Locations ??= [];
+
+            var candidates = route.Locations
+                .Where(location => !string.IsNullOrWhiteSpace(location.Name))
+                .Take(5)
+                .ToArray();
+            if (candidates.Length == 0)
+            {
+                route.Locations = [];
+                return Ok(route);
+            }
+
             if (string.IsNullOrWhiteSpace(_googleApiKey))
             {
                 return Problem(
@@ -114,9 +135,8 @@ public sealed class RouteController : ControllerBase
             }
 
             var httpClient = _httpClientFactory.CreateClient();
-            var lookups = route.Locations
-                .Where(location => !string.IsNullOrWhiteSpace(location.Name))
-                .Select(location => FindCoordinatesAsync(httpClient, location.Name, route.City, cancellationToken))
+            var lookups = candidates
+                .Select(location => FindCoordinatesAsync(httpClient, location, route.City, cancellationToken))
                 .ToArray();
 
             Location?[] resolved;
@@ -142,11 +162,13 @@ public sealed class RouteController : ControllerBase
 
     private async Task<Location?> FindCoordinatesAsync(
         HttpClient httpClient,
-        string name,
+        Location location,
         string city,
         CancellationToken cancellationToken)
     {
-        var textQuery = string.IsNullOrWhiteSpace(city) ? name : $"{name}, {city}";
+        var textQuery = string.IsNullOrWhiteSpace(city)
+            ? location.Name
+            : $"{location.Name}, {city}";
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             "https://places.googleapis.com/v1/places:searchText");
@@ -171,10 +193,11 @@ public sealed class RouteController : ControllerBase
 
         return new Location
         {
-            Name = name,
-            PlaceId = place.Id,
+            Name = location.Name,
+            GooglePlaceId = place.Id,
             Lat = place.Location.Latitude,
-            Lng = place.Location.Longitude
+            Lng = place.Location.Longitude,
+            Description = location.Description
         };
     }
 
