@@ -1,6 +1,10 @@
 @GuAId.Api_HostAddress = http://localhost:5104
 
-GET {{GuAId.Api_HostAddress}}/weatherforecast/
-Accept: application/json
+POST {{GuAId.Api_HostAddress}}/api/route
+Content-Type: application/json
+
+{
+  "prompt": "Take me through the historical locations of Krakow"
+}
 
 ###
