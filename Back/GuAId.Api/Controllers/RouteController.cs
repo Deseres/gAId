@@ -151,7 +151,7 @@ public sealed class RouteController : ControllerBase
             HttpMethod.Post,
             "https://places.googleapis.com/v1/places:searchText");
         request.Headers.Add("X-Goog-Api-Key", _googleApiKey);
-        request.Headers.Add("X-Goog-FieldMask", "places.location");
+        request.Headers.Add("X-Goog-FieldMask", "places.id,places.location");
         request.Content = JsonContent.Create(new { textQuery });
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
@@ -165,15 +165,16 @@ public sealed class RouteController : ControllerBase
         var payload = await response.Content.ReadFromJsonAsync<PlacesSearchResponse>(
             JsonOptions,
             cancellationToken);
-        var coordinates = payload?.Places?.FirstOrDefault()?.Location;
-        if (coordinates is null)
+        var place = payload?.Places?.FirstOrDefault();
+        if (place?.Location is null || string.IsNullOrWhiteSpace(place.Id))
             return null;
 
         return new Location
         {
             Name = name,
-            Lat = coordinates.Latitude,
-            Lng = coordinates.Longitude
+            PlaceId = place.Id,
+            Lat = place.Location.Latitude,
+            Lng = place.Location.Longitude
         };
     }
 
@@ -184,6 +185,8 @@ public sealed class RouteController : ControllerBase
 
     private sealed class PlaceHit
     {
+        public string? Id { get; set; }
+
         public PlaceCoordinates? Location { get; set; }
     }
 
