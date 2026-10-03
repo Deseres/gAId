@@ -10,6 +10,9 @@
 appsettings.Development.json
 appsettings.*.local.json
 
+# Deploy output
+deploy/
+
 # User-specific files
 *.rsuser
 *.suo
