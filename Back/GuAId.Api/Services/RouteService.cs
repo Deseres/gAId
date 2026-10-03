@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using GuAId.Api.Models;
@@ -8,37 +9,32 @@ namespace GuAId.Api.Services;
 
 public sealed class RouteService
 {
+    private const int StopCount = 5;
     private const double SearchRadiusMeters = 2000;
+    private const double MaxStopMeters = 3000;
     private const double SamePlaceMeters = 30;
 
     private const string SystemPrompt =
         """
         You are a travel guide that proposes the next stop on a map.
-        Each request is one step. The message has "Current start" and "User request".
+        The message has "Current start" and "User request".
+        Current start is where the user is now. It is fixed. Do not ask for a start.
+        Do not switch to a different start written in the user request.
+        The user request is the wish for this step: vibe, food, a change of plan, or trying again.
+        If the user request is empty, suggest interesting places near the start.
         Reply with one JSON object and no other text. Use this shape:
         {
           "text": "short reply to the user",
-          "city": "city name or empty string",
           "locations": [
-            { "name": "place name", "description": "why this place fits this step" }
+            { "name": "Place name, City", "description": "why this place fits this step" }
           ]
         }
-        If Current start is "not provided":
-        A start in the user request is a place they are at or the route starts from, such as "I am at the station" or "we start from the hotel".
-        If the user request has no start, do not propose stops.
-        Then text asks them, in their language, to name the starting point, city is "", and locations is [].
-        If the user request names a start, use that place as the anchor.
-        If Current start is a place or coordinates, that place is the anchor.
-        Do not ask for a start. Do not switch to a different start written in the user request.
-        The user request is only the wish for this step: vibe, food, a change of plan, or trying again.
-        If the user request is empty, suggest interesting places near the anchor.
-        When there is an anchor, city is the English city name, or "" if you do not know it.
-        locations then has exactly 5 real places near the anchor that match the user request.
-        These are options for the next stop only. Do not include the anchor itself.
-        Prefer the closest interesting places to the anchor.
-        name is the place name in English only, without the city.
-        description is one short sentence, in the user's language, saying why you suggest this place at this step.
-        text is a short reply in the user's language.
+        locations has exactly 5 real places within walking distance of the start that match the user request.
+        Do not include the start itself.
+        name is an English place name plus the city, specific enough for a map search, such as "Wawel Castle, Krakow".
+        description is one short sentence saying why you suggest this place at this step.
+        Write text and description in the language of the User request text, not the language of the country.
+        If the User request is empty, write in English.
         Do not add other fields. Do not invent coordinates or place ids.
         """;
 
@@ -64,20 +60,21 @@ public sealed class RouteService
 
     public async Task<RouteResponse> CreateAsync(RouteRequest request, CancellationToken cancellationToken)
     {
-        var start = request.Start;
-        if (HasPartialCoordinates(start))
+        if (request.Start?.Lat is not double startLat || request.Start.Lng is not double startLng)
         {
             throw new RouteCallException(
                 StatusCodes.Status400BadRequest,
-                "Start lat and lng must be sent together.");
+                "Start with lat and lng is required.");
         }
 
-        if (!HasStart(start) && string.IsNullOrWhiteSpace(request.Prompt))
+        if (startLat is < -90 or > 90 || startLng is < -180 or > 180)
         {
             throw new RouteCallException(
                 StatusCodes.Status400BadRequest,
-                "Prompt or start is required.");
+                "Start lat must be between -90 and 90, lng between -180 and 180.");
         }
+
+        var start = request.Start;
 
         if (string.IsNullOrWhiteSpace(_apiKey))
         {
@@ -86,11 +83,18 @@ public sealed class RouteService
                 "Set OpenAI:ApiKey in appsettings.Development.json.");
         }
 
+        if (string.IsNullOrWhiteSpace(_googleApiKey))
+        {
+            throw new RouteCallException(
+                StatusCodes.Status500InternalServerError,
+                "Set Google:ApiKey in appsettings.Development.json.");
+        }
+
         var client = new ChatClient(_model, _apiKey);
         List<ChatMessage> messages =
         [
             new SystemChatMessage(SystemPrompt),
-            new UserChatMessage(BuildUserMessage(request))
+            new UserChatMessage(BuildUserMessage(start, startLat, startLng, request.Prompt))
         ];
         var options = new ChatCompletionOptions
         {
@@ -115,42 +119,33 @@ public sealed class RouteService
                 "The model returned an empty response.");
         }
 
-        RouteResponse route;
+        ModelRoute model;
         try
         {
-            route = JsonSerializer.Deserialize<RouteResponse>(text, JsonOptions)
+            model = JsonSerializer.Deserialize<ModelRoute>(text, JsonOptions)
                 ?? throw new JsonException("Empty route.");
         }
         catch (JsonException)
         {
             throw new RouteCallException(
                 StatusCodes.Status502BadGateway,
-                "The model returned JSON that does not match RouteResponse.");
+                "The model returned JSON that does not match the route shape.");
         }
 
-        route.Text ??= "";
-        route.Locations ??= [];
-
-        var candidates = route.Locations
+        var candidates = (model.Locations ?? [])
             .Where(location => !string.IsNullOrWhiteSpace(location.Name))
-            .Take(5)
+            .Take(StopCount)
             .ToArray();
-        if (candidates.Length == 0)
-        {
-            route.Locations = [];
-            return route;
-        }
 
-        if (string.IsNullOrWhiteSpace(_googleApiKey))
-        {
-            throw new RouteCallException(
-                StatusCodes.Status500InternalServerError,
-                "Set Google:ApiKey in appsettings.Development.json.");
-        }
+        var excludedPlaceIds = (request.Visited ?? [])
+            .Append(start.GooglePlaceId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!.Trim())
+            .ToHashSet(StringComparer.Ordinal);
 
         var httpClient = _httpClientFactory.CreateClient();
         var lookups = candidates
-            .Select(location => FindCoordinatesAsync(httpClient, location, route.City, start, cancellationToken))
+            .Select(location => FindPlaceAsync(httpClient, location, excludedPlaceIds, startLat, startLng, cancellationToken))
             .ToArray();
 
         Location?[] resolved;
@@ -163,50 +158,51 @@ public sealed class RouteService
             throw new RouteCallException(StatusCodes.Status502BadGateway, ex.Message);
         }
 
-        route.Locations = resolved.OfType<Location>().ToList();
-        return route;
+        return new RouteResponse
+        {
+            Text = model.Text ?? "",
+            Locations = resolved
+                .OfType<Location>()
+                .DistinctBy(location => location.GooglePlaceId)
+                .ToList()
+        };
     }
 
-    private static string BuildUserMessage(RouteRequest request)
+    private static string BuildUserMessage(RouteStart start, double lat, double lng, string? prompt)
     {
-        var prompt = request.Prompt?.Trim() ?? "";
-        if (!HasStart(request.Start))
-            return $"Current start: not provided\nUser request: {prompt}";
-
-        var start = request.Start!;
         var parts = new List<string>();
         if (!string.IsNullOrWhiteSpace(start.Name))
             parts.Add(start.Name.Trim());
-        if (start.Lat is double lat && start.Lng is double lng)
-            parts.Add($"coordinates {lat.ToString(System.Globalization.CultureInfo.InvariantCulture)}, {lng.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        parts.Add($"coordinates {lat.ToString(CultureInfo.InvariantCulture)}, {lng.ToString(CultureInfo.InvariantCulture)}");
 
-        return $"Current start: {string.Join(", ", parts)}\nUser request: {prompt}";
+        return $"Current start: {string.Join(", ", parts)}\nUser request: {prompt?.Trim() ?? ""}";
     }
 
-    private static bool HasStart(RouteStart? start) =>
-        start is not null && (
-            !string.IsNullOrWhiteSpace(start.Name) ||
-            start.Lat is not null && start.Lng is not null);
-
-    private static bool HasPartialCoordinates(RouteStart? start) =>
-        start is not null && start.Lat is not null != start.Lng is not null;
-
-    private async Task<Location?> FindCoordinatesAsync(
+    private async Task<Location?> FindPlaceAsync(
         HttpClient httpClient,
-        Location location,
-        string city,
-        RouteStart? start,
+        ModelLocation location,
+        HashSet<string> excludedPlaceIds,
+        double startLat,
+        double startLng,
         CancellationToken cancellationToken)
     {
-        var textQuery = string.IsNullOrWhiteSpace(city)
-            ? location.Name
-            : $"{location.Name}, {city}";
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             "https://places.googleapis.com/v1/places:searchText");
         request.Headers.Add("X-Goog-Api-Key", _googleApiKey);
-        request.Headers.Add("X-Goog-FieldMask", "places.id,places.location");
-        request.Content = JsonContent.Create(BuildPlacesBody(textQuery, start));
+        request.Headers.Add("X-Goog-FieldMask", "places.id,places.location,places.displayName");
+        request.Content = JsonContent.Create(new
+        {
+            textQuery = location.Name!.Trim(),
+            locationBias = new
+            {
+                circle = new
+                {
+                    center = new { latitude = startLat, longitude = startLng },
+                    radius = SearchRadiusMeters
+                }
+            }
+        });
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -220,53 +216,27 @@ public sealed class RouteService
             JsonOptions,
             cancellationToken);
         var place = payload?.Places?.FirstOrDefault();
-        if (place?.Location is null || string.IsNullOrWhiteSpace(place.Id))
+        var displayName = place?.DisplayName?.Text?.Trim();
+        if (place?.Location is null || string.IsNullOrWhiteSpace(place.Id) || string.IsNullOrWhiteSpace(displayName))
             return null;
 
-        if (IsCurrentStart(place.Id, place.Location.Latitude, place.Location.Longitude, start))
+        var lat = place.Location.Latitude;
+        var lng = place.Location.Longitude;
+        var distance = DistanceMeters(startLat, startLng, lat, lng);
+        if (distance > MaxStopMeters || distance <= SamePlaceMeters)
+            return null;
+
+        if (excludedPlaceIds.Contains(place.Id))
             return null;
 
         return new Location
         {
-            Name = location.Name,
+            Name = displayName,
             GooglePlaceId = place.Id,
-            Lat = place.Location.Latitude,
-            Lng = place.Location.Longitude,
-            Description = location.Description
+            Lat = lat,
+            Lng = lng,
+            Description = location.Description ?? ""
         };
-    }
-
-    private static object BuildPlacesBody(string textQuery, RouteStart? start)
-    {
-        if (start?.Lat is not double lat || start.Lng is not double lng)
-            return new { textQuery };
-
-        return new
-        {
-            textQuery,
-            locationBias = new
-            {
-                circle = new
-                {
-                    center = new { latitude = lat, longitude = lng },
-                    radius = SearchRadiusMeters
-                }
-            }
-        };
-    }
-
-    private static bool IsCurrentStart(string placeId, double lat, double lng, RouteStart? start)
-    {
-        if (start is null)
-            return false;
-
-        if (!string.IsNullOrWhiteSpace(start.GooglePlaceId) &&
-            string.Equals(start.GooglePlaceId, placeId, StringComparison.Ordinal))
-            return true;
-
-        return start.Lat is double startLat &&
-            start.Lng is double startLng &&
-            DistanceMeters(startLat, startLng, lat, lng) <= SamePlaceMeters;
     }
 
     private static double DistanceMeters(double lat1, double lng1, double lat2, double lng2)
@@ -283,6 +253,20 @@ public sealed class RouteService
 
     private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180;
 
+    private sealed class ModelRoute
+    {
+        public string? Text { get; set; }
+
+        public List<ModelLocation>? Locations { get; set; }
+    }
+
+    private sealed class ModelLocation
+    {
+        public string? Name { get; set; }
+
+        public string? Description { get; set; }
+    }
+
     private sealed class PlacesSearchResponse
     {
         public List<PlaceHit>? Places { get; set; }
@@ -293,6 +277,13 @@ public sealed class RouteService
         public string? Id { get; set; }
 
         public PlaceCoordinates? Location { get; set; }
+
+        public PlaceDisplayName? DisplayName { get; set; }
+    }
+
+    private sealed class PlaceDisplayName
+    {
+        public string? Text { get; set; }
     }
 
     private sealed class PlaceCoordinates
