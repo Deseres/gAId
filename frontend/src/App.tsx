@@ -1,122 +1,306 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useState, useEffect, useRef } from 'react';
+import { APIProvider, Map, AdvancedMarker, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 
-function App() {
-  const [count, setCount] = useState(0)
+const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+// Обновленные типы для работы с реальным бэкендом
+type Location = {
+  id: number;
+  name: string;
+  placeId: string;
+  lat: number;
+  lng: number;
+  description?: string;
+  rating?: string | number;
+  estimatedCost?: string;
+};
 
-      <div className="ticks"></div>
+type RouteData = {
+  city: string;
+  introMessage: string;
+  locations: Location[];
+};
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+type Message = {
+  id: string;
+  sender: 'ai' | 'user';
+  text?: string;
+  isTyping?: boolean;
+  routeData?: RouteData;
+};
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+function RouteLine({ locations }: { locations: Location[] }) {
+  const map = useMap();
+  const routesLibrary = useMapsLibrary('routes');
+  const [directionsService, setDirectionsService] = useState<google.maps.DirectionsService>();
+  const [directionsRenderer, setDirectionsRenderer] = useState<google.maps.DirectionsRenderer>();
+
+  useEffect(() => {
+    if (!routesLibrary || !map) return;
+    setDirectionsService(new routesLibrary.DirectionsService());
+    setDirectionsRenderer(new routesLibrary.DirectionsRenderer({ map, suppressMarkers: true }));
+  }, [routesLibrary, map]);
+
+  useEffect(() => {
+    if (!directionsService || !directionsRenderer || locations.length < 2) {
+      if (directionsRenderer) directionsRenderer.setDirections(null);
+      return;
+    }
+
+    const origin = locations[0];
+    const destination = locations[locations.length - 1];
+    const waypoints = locations.slice(1, -1).map(loc => ({
+      location: { lat: loc.lat, lng: loc.lng },
+      stopover: true
+    }));
+
+    directionsService.route({
+      origin: { lat: origin.lat, lng: origin.lng },
+      destination: { lat: destination.lat, lng: destination.lng },
+      waypoints,
+      travelMode: google.maps.TravelMode.WALKING,
+    }).then(response => {
+      directionsRenderer.setDirections(response);
+    });
+  }, [directionsService, directionsRenderer, locations]);
+
+  return null;
 }
 
-export default App
+export default function App() {
+  const [messages, setMessages] = useState<Message[]>([
+    { 
+      id: '1', 
+      sender: 'ai', 
+      text: "Hi! I'm your personal AI guide. What city are we exploring today, and what kind of vibe are you looking for?" 
+    }
+  ]);
+  const [inputValue, setInputValue] = useState('');
+  const [isPanelExpanded, setIsPanelExpanded] = useState(true);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  const defaultCenter = { lat: 50.0614, lng: 19.9383 };
+  
+  // Ищем последний маршрут в истории чата для отображения на карте
+  const latestRouteMsg = [...messages].reverse().find(m => m.routeData);
+  const activeRoute = latestRouteMsg?.routeData;
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const handleSend = async () => {
+    if (!inputValue.trim()) return;
+    
+    const userText = inputValue;
+    const newUserMsg: Message = { id: Date.now().toString(), sender: 'user', text: userText };
+    const typingMsg: Message = { id: 'typing', sender: 'ai', isTyping: true };
+    
+    setMessages(prev => [...prev, newUserMsg, typingMsg]);
+    setInputValue('');
+
+    try {
+      const response = await fetch("https://guaid-back-cehzhqhqfzg2egan.swedencentral-01.azurewebsites.net/api/route", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: userText })
+      });
+
+      if (!response.ok) throw new Error('Failed to fetch route');
+      
+      const data = await response.json();
+
+      // Маппинг ответа от бэкенда с добавлением fallback-значений для UI
+      const transformedRoute: RouteData = {
+        city: data.city,
+        introMessage: `I've planned a route for you in ${data.city}. Check out these locations!`,
+        locations: data.locations.map((loc: any, index: number) => ({
+          ...loc,
+          id: index + 1,
+          description: loc.description || "Details will be generated by AI soon.",
+          rating: loc.rating || "N/A",
+          estimatedCost: loc.estimatedCost || "Free"
+        }))
+      };
+
+      setMessages(prev => {
+        const filtered = prev.filter(m => !m.isTyping);
+        return [...filtered, { 
+          id: Date.now().toString(), 
+          sender: 'ai', 
+          text: transformedRoute.introMessage,
+          routeData: transformedRoute 
+        }];
+      });
+
+    } catch (error) {
+      console.error("API Error:", error);
+      setMessages(prev => {
+        const filtered = prev.filter(m => !m.isTyping);
+        return [...filtered, { 
+          id: Date.now().toString(), 
+          sender: 'ai', 
+          text: "Sorry, I couldn't connect to the server to generate your route. Please try again." 
+        }];
+      });
+    }
+  };
+
+  return (
+    <div className="relative w-full h-[100dvh] overflow-hidden bg-gray-100 font-['Inter',sans-serif]">
+      
+      <div className="absolute top-6 left-6 z-20 pointer-events-none">
+        <h1 className="text-4xl font-black bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent drop-shadow-md tracking-tight">
+          guAId.
+        </h1>
+      </div>
+
+      <div className="absolute inset-0 z-0">
+        <APIProvider apiKey={API_KEY}>
+          <Map
+            defaultCenter={activeRoute?.locations[0] || defaultCenter}
+            defaultZoom={14}
+            mapId="DEMO_MAP_ID"
+            disableDefaultUI={true}
+            gestureHandling="greedy"
+          >
+            {activeRoute && (
+              <>
+                <RouteLine locations={activeRoute.locations} />
+                {activeRoute.locations.map(loc => (
+                  <AdvancedMarker key={loc.id} position={{ lat: loc.lat, lng: loc.lng }}>
+                    <div className="bg-black text-white px-4 py-2 rounded-full font-bold shadow-xl border-2 border-white text-base">
+                      {loc.id}
+                    </div>
+                  </AdvancedMarker>
+                ))}
+              </>
+            )}
+          </Map>
+        </APIProvider>
+      </div>
+
+      <div 
+        className={`absolute bottom-0 w-full bg-white/95 backdrop-blur-xl rounded-t-[2rem] shadow-[0_-10px_50px_rgba(0,0,0,0.1)] z-10 flex flex-col transition-all duration-500 ease-in-out ${
+          isPanelExpanded ? 'max-h-[85dvh] h-[85dvh]' : 'max-h-[15dvh] h-[15dvh]'
+        }`}
+      >
+        <div 
+          className="w-full flex justify-center pt-5 pb-3 cursor-pointer shrink-0"
+          onClick={() => setIsPanelExpanded(!isPanelExpanded)}
+        >
+          <div className="w-16 h-1.5 bg-gray-300 rounded-full hover:bg-gray-400 transition-colors"></div>
+        </div>
+
+        {!isPanelExpanded && activeRoute && (
+          <div className="px-8 pb-4 flex justify-between items-center animate-fadeIn">
+            <div>
+              <h4 className="font-bold text-xl text-gray-900 tracking-tight">Route Active</h4>
+              <p className="text-base text-gray-500 font-medium">{activeRoute.locations.length} locations • Swipe up for chat</p>
+            </div>
+            <button 
+              onClick={() => setIsPanelExpanded(true)}
+              className="bg-black text-white px-6 py-3 rounded-2xl text-base font-bold active:scale-95 transition-transform"
+            >
+              Open
+            </button>
+          </div>
+        )}
+
+        <div className={`flex-col flex-grow overflow-hidden ${!isPanelExpanded ? 'hidden' : 'flex'}`}>
+          <div className="flex-grow overflow-y-auto px-6 pt-2 pb-32 custom-scrollbar flex flex-col gap-6">
+            {messages.map(msg => (
+              <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} animate-fadeIn`}>
+                
+                {msg.sender === 'ai' && (
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 shrink-0 shadow-md flex items-center justify-center text-white font-bold text-sm mr-3 mt-1">
+                    AI
+                  </div>
+                )}
+
+                <div className={`max-w-[85%] rounded-3xl p-5 text-base leading-relaxed ${
+                  msg.sender === 'user' 
+                    ? 'bg-black text-white rounded-br-sm' 
+                    : 'bg-gray-100 text-gray-900 rounded-tl-sm'
+                }`}>
+                  
+                  {msg.isTyping ? (
+                    <div className="flex gap-2 items-center h-6 px-2">
+                      <div className="w-2.5 h-2.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                      <div className="w-2.5 h-2.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                      <div className="w-2.5 h-2.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                    </div>
+                  ) : (
+                    <p className="font-medium">{msg.text}</p>
+                  )}
+
+                  {msg.routeData && (
+                    <div className="mt-5 flex flex-col gap-3">
+                      {msg.routeData.locations.map(loc => (
+                        <div key={loc.id} className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm flex gap-4 items-start relative group">
+                          <div className="w-8 h-8 shrink-0 bg-black text-white rounded-full flex items-center justify-center font-bold text-sm mt-1">
+                            {loc.id}
+                          </div>
+                          <div className="flex-grow pr-6">
+                            <h4 className="font-bold text-gray-900 text-lg tracking-tight">{loc.name}</h4>
+                            <p className="text-sm text-gray-600 mt-1 leading-snug">{loc.description}</p>
+                            <div className="flex gap-3 mt-3 text-sm font-bold text-gray-700">
+                              <span className="bg-gray-50 px-2 py-1 rounded-lg">⭐ {loc.rating}</span>
+                              <span className="bg-gray-50 px-2 py-1 rounded-lg">💰 {loc.estimatedCost}</span>
+                            </div>
+                          </div>
+                          
+                          {/* Кнопка удаления локации (подготовка к следующему этапу) */}
+                          <button 
+                            className="absolute right-4 top-4 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500"
+                            title="Remove location"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                </div>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+
+          <div className="absolute bottom-0 left-0 w-full bg-white p-6 pt-4 border-t border-gray-100">
+            <div className="relative">
+              <textarea
+                className="w-full min-h-[64px] max-h-[120px] p-5 pr-16 border-2 border-gray-200 rounded-[2rem] resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-gray-50 text-base font-medium shadow-inner"
+                placeholder="Where should we go next?"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+              />
+              <button
+                onClick={handleSend}
+                className="absolute right-3 bottom-3 w-12 h-12 bg-black text-white rounded-full flex items-center justify-center hover:bg-gray-800 transition-colors disabled:opacity-30 disabled:hover:bg-black"
+                disabled={!inputValue.trim()}
+              >
+                <svg className="w-5 h-5 rtl:rotate-180" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 10">
+                  <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M1 5h12m0 0L9 1m4 4L9 9"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
