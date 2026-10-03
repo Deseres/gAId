@@ -6,6 +6,10 @@
 # dotenv files
 .env
 
+# Local secrets. The OpenAI key lives in appsettings.Development.json.
+appsettings.Development.json
+appsettings.*.local.json
+
 # User-specific files
 *.rsuser
 *.suo
