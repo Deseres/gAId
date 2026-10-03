@@ -15,25 +15,37 @@ public sealed class RouteService
     private const int MaxQueries = 3;
     private const int ResultsPerQuery = 10;
     private const double MaxStopMeters = 3000;
+    private const double MaxNamedPlaceMeters = 25000;
     private const double SamePlaceMeters = 30;
     private const double MetersPerDegree = 111320;
 
-    private static readonly string[] DefaultQueries = ["historical landmark", "museum", "park"];
+    private static readonly PlaceQuery[] DefaultQueries =
+    [
+        new("historical landmark", false),
+        new("museum", false),
+        new("park", false)
+    ];
 
     private const string QueryPrompt =
         """
-        You turn a traveler's message into Google Maps search queries for places near them.
-        Reply with one JSON object and no other text: { "queries": ["..."] }
+        You turn a traveler's message into Google Maps search queries.
+        Reply with one JSON object and no other text: { "queries": [ { "text": "...", "named": false } ] }
         Give 1 to 3 short English queries that Google Maps understands, such as "italian restaurant", "specialty coffee", "viewpoint", "park".
         The message can be in any language. Understand the wish behind it and answer with English queries.
+        Correct obvious misspellings of a place name to the real English name Google Maps uses.
         Use one query when the request is specific. Use up to 3 different queries when it is vague.
+        Set named to true only when text is the proper name of one particular place, such as "Wawel Castle".
+        Set named to false when text is a type of place, a mood or an activity, such as "castle", "cafe" or "park".
         Examples:
-        "I want Italian food" -> ["italian restaurant"]
-        "something romantic for the evening" -> ["romantic restaurant", "wine bar", "viewpoint"]
-        "tired, want to sit somewhere quiet" -> ["quiet cafe", "park"]
-        "куда сходить с ребенком" -> ["playground", "children museum", "park"]
-        Do not include a city or an address. The search is already limited to the area around the traveler.
-        Only if the message has no wish at all, such as random letters, return ["historical landmark", "museum", "park"].
+        "I want Italian food" -> [{ "text": "italian restaurant", "named": false }]
+        "something romantic for the evening" -> [{ "text": "romantic restaurant", "named": false }, { "text": "wine bar", "named": false }, { "text": "viewpoint", "named": false }]
+        "tired, want to sit somewhere quiet" -> [{ "text": "quiet cafe", "named": false }, { "text": "park", "named": false }]
+        "куда сходить с ребенком" -> [{ "text": "playground", "named": false }, { "text": "children museum", "named": false }, { "text": "park", "named": false }]
+        "замок вавелл" -> [{ "text": "Wawel Castle", "named": true }]
+        "хочу на Вавель и кофе" -> [{ "text": "Wawel Castle", "named": true }, { "text": "cafe", "named": false }]
+        Do not include a city or an address.
+        A query with named false is searched only near the traveler. A query with named true may be farther away.
+        Only if the message has no wish at all, such as random letters, return [{ "text": "historical landmark", "named": false }, { "text": "museum", "named": false }, { "text": "park", "named": false }].
         """;
 
     private const string PickPrompt =
@@ -44,6 +56,8 @@ public sealed class RouteService
         Each line has the number, the name, the type and the distance from the start.
         Pick up to 5 places from that list that best match the user request. Use only numbers from the list.
         If the user request is empty, pick the most interesting places.
+        A place several kilometers away is fine when the user named that specific place. Include it and mention how far it is.
+        A type of place, such as a cafe or a park, should stay close to the start.
         Pick places a visitor can go to or see. Skip travel agencies, tour operators, offices and shops unless the user asks for them.
         Reply with one JSON object and no other text. Use this shape:
         {
@@ -124,7 +138,9 @@ public sealed class RouteService
             ? DefaultQueries
             : await BuildQueriesAsync(client, prompt, cancellationToken);
 
-        _logger.LogInformation("Places queries: {Queries}", string.Join(" | ", queries));
+        _logger.LogInformation(
+            "Places queries: {Queries}",
+            string.Join(" | ", queries.Select(query => query.Named ? $"{query.Text} (named)" : query.Text)));
 
         var excludedPlaceIds = (request.Visited ?? [])
             .Append(start.GooglePlaceId)
@@ -163,21 +179,66 @@ public sealed class RouteService
         };
     }
 
-    private static async Task<string[]> BuildQueriesAsync(
+    private static async Task<PlaceQuery[]> BuildQueriesAsync(
         ChatClient client,
         string prompt,
         CancellationToken cancellationToken)
     {
         var result = await CompleteJsonAsync<ModelQueries>(client, QueryPrompt, prompt, cancellationToken);
-        var queries = (result.Queries ?? [])
-            .Where(query => !string.IsNullOrWhiteSpace(query))
-            .Select(query => query!.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(MaxQueries)
-            .ToArray();
-
+        var queries = ParseQueries(result.Queries);
         return queries.Length > 0 ? queries : DefaultQueries;
     }
+
+    private static PlaceQuery[] ParseQueries(List<JsonElement>? raw)
+    {
+        var queries = new List<PlaceQuery>();
+        foreach (var item in raw ?? [])
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                var text = item.GetString()?.Trim();
+                if (!string.IsNullOrWhiteSpace(text))
+                    queries.Add(new PlaceQuery(text, false));
+                continue;
+            }
+
+            if (item.ValueKind != JsonValueKind.Object || !TryGetProperty(item, "text", out var textProp))
+                continue;
+
+            var name = textProp.ValueKind == JsonValueKind.String ? textProp.GetString()?.Trim() : null;
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            var named = TryGetProperty(item, "named", out var namedProp) && IsTrue(namedProp);
+            queries.Add(new PlaceQuery(name, named));
+        }
+
+        return queries
+            .DistinctBy(query => query.Text, StringComparer.OrdinalIgnoreCase)
+            .Take(MaxQueries)
+            .ToArray();
+    }
+
+    private static bool TryGetProperty(JsonElement obj, string name, out JsonElement value)
+    {
+        foreach (var property in obj.EnumerateObject())
+        {
+            if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static bool IsTrue(JsonElement value) =>
+        value.ValueKind == JsonValueKind.True ||
+        (value.ValueKind == JsonValueKind.String &&
+         bool.TryParse(value.GetString(), out var parsed) &&
+         parsed);
 
     private static async Task<T> CompleteJsonAsync<T>(
         ChatClient client,
@@ -227,7 +288,7 @@ public sealed class RouteService
     }
 
     private async Task<List<NearbyPlace>> FindNearbyAsync(
-        string[] queries,
+        PlaceQuery[] queries,
         double startLat,
         double startLng,
         HashSet<string> excludedPlaceIds,
@@ -247,29 +308,33 @@ public sealed class RouteService
 
         var seen = new HashSet<string>(excludedPlaceIds, StringComparer.Ordinal);
         var places = new List<NearbyPlace>();
-        foreach (var place in results.SelectMany(hits => hits))
+        for (var i = 0; i < queries.Length; i++)
         {
-            var name = place.DisplayName?.Text?.Trim();
-            if (place.Location is null || string.IsNullOrWhiteSpace(place.Id) || string.IsNullOrWhiteSpace(name))
-                continue;
+            var maxMeters = queries[i].Named ? MaxNamedPlaceMeters : MaxStopMeters;
+            foreach (var place in results[i])
+            {
+                var name = place.DisplayName?.Text?.Trim();
+                if (place.Location is null || string.IsNullOrWhiteSpace(place.Id) || string.IsNullOrWhiteSpace(name))
+                    continue;
 
-            if (place.BusinessStatus is "CLOSED_PERMANENTLY" or "CLOSED_TEMPORARILY")
-                continue;
+                if (place.BusinessStatus is "CLOSED_PERMANENTLY" or "CLOSED_TEMPORARILY")
+                    continue;
 
-            var distance = DistanceMeters(startLat, startLng, place.Location.Latitude, place.Location.Longitude);
-            if (distance > MaxStopMeters || distance <= SamePlaceMeters)
-                continue;
+                var distance = DistanceMeters(startLat, startLng, place.Location.Latitude, place.Location.Longitude);
+                if (distance > maxMeters || distance <= SamePlaceMeters)
+                    continue;
 
-            if (!seen.Add(place.Id))
-                continue;
+                if (!seen.Add(place.Id))
+                    continue;
 
-            places.Add(new NearbyPlace(
-                place.Id,
-                name,
-                place.PrimaryTypeDisplayName?.Text?.Trim() ?? "",
-                place.Location.Latitude,
-                place.Location.Longitude,
-                (int)Math.Round(distance)));
+                places.Add(new NearbyPlace(
+                    place.Id,
+                    name,
+                    place.PrimaryTypeDisplayName?.Text?.Trim() ?? "",
+                    place.Location.Latitude,
+                    place.Location.Longitude,
+                    (int)Math.Round(distance)));
+            }
         }
 
         return places;
@@ -277,13 +342,14 @@ public sealed class RouteService
 
     private async Task<List<PlaceHit>> SearchTextAsync(
         HttpClient httpClient,
-        string query,
+        PlaceQuery query,
         double lat,
         double lng,
         CancellationToken cancellationToken)
     {
-        var latDelta = MaxStopMeters / MetersPerDegree;
-        var lngDelta = Math.Min(180, MaxStopMeters / (MetersPerDegree * Math.Cos(DegreesToRadians(lat))));
+        var radius = query.Named ? MaxNamedPlaceMeters : MaxStopMeters;
+        var latDelta = radius / MetersPerDegree;
+        var lngDelta = Math.Min(180, radius / (MetersPerDegree * Math.Cos(DegreesToRadians(lat))));
 
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
@@ -294,7 +360,7 @@ public sealed class RouteService
             "places.id,places.displayName,places.location,places.primaryTypeDisplayName,places.businessStatus");
         request.Content = JsonContent.Create(new
         {
-            textQuery = query,
+            textQuery = query.Text,
             pageSize = ResultsPerQuery,
             locationRestriction = new
             {
@@ -373,11 +439,13 @@ public sealed class RouteService
 
     private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180;
 
+    private sealed record PlaceQuery(string Text, bool Named);
+
     private sealed record NearbyPlace(string Id, string Name, string Type, double Lat, double Lng, int DistanceMeters);
 
     private sealed class ModelQueries
     {
-        public List<string?>? Queries { get; set; }
+        public List<JsonElement>? Queries { get; set; }
     }
 
     private sealed class ModelRoute
