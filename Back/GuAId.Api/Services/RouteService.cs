@@ -11,9 +11,10 @@ namespace GuAId.Api.Services;
 
 public sealed class RouteService
 {
-    private const int StopCount = 5;
+    private const int StopCount = 10;
     private const int MaxQueries = 3;
-    private const int ResultsPerQuery = 10;
+    private const int MaxPlanSteps = 4;
+    private const int ResultsPerQuery = 20;
     private const double MaxStopMeters = 3000;
     private const double MaxNamedPlaceMeters = 25000;
     private const double SamePlaceMeters = 30;
@@ -49,17 +50,53 @@ public sealed class RouteService
         Only if the message has no wish at all, such as random letters, return [{ "text": "historical landmark", "named": false }, { "text": "museum", "named": false }, { "text": "park", "named": false }].
         """;
 
+    private const string PlanPrompt =
+        """
+        You split a traveler's message into ordered stops.
+        Reply with one JSON object and no other text:
+        { "steps": [ { "label": "...", "queries": [ { "text": "...", "named": false } ] } ] }
+        Each step is one stop. Each step has 1 to 3 short English queries that Google Maps understands.
+        label is a short name for the stop in the language of the message.
+        The message can be in any language. queries are always English.
+        Correct obvious misspellings of a place name to the real English name Google Maps uses.
+        Set named to true only when text is the proper name of one particular place, such as "Wawel Castle".
+        Set named to false when text is a type of place, a mood or an activity, such as "castle", "cafe" or "park".
+        Do not include a city or an address.
+        Use one query when the stop is specific. Use up to 3 queries when that one stop is vague.
+        Return at most 4 steps.
+        Split into separate steps only in these cases:
+        - The message marks an order, with words such as "потом", "затем", "сначала", "после", "then", "after" or "next".
+        - The message joins wishes with "и" or "and", and they cannot be the same business, such as a barber and a grocery store.
+        Keep a single step when both wishes usually happen in one place, such as hookah and food, coffee and dessert, or food and wine.
+        Keep a single step when it is unclear, such as a museum and coffee.
+        A vague wish with no order is one step.
+        Examples:
+        "поесть, потом барбер, потом в магаз" -> [{ "label": "поесть", "queries": [{ "text": "restaurant", "named": false }] }, { "label": "барбершоп", "queries": [{ "text": "barber shop", "named": false }] }, { "label": "магазин", "queries": [{ "text": "supermarket", "named": false }] }]
+        "кальян и покушать" -> [{ "label": "кальян и еда", "queries": [{ "text": "hookah lounge", "named": false }] }]
+        "кофе и десерт" -> [{ "label": "кофе", "queries": [{ "text": "cafe", "named": false }] }]
+        "барбер и магазин" -> [{ "label": "барбершоп", "queries": [{ "text": "barber shop", "named": false }] }, { "label": "магазин", "queries": [{ "text": "supermarket", "named": false }] }]
+        "музей и кофе" -> [{ "label": "музей и кофе", "queries": [{ "text": "museum", "named": false }, { "text": "cafe", "named": false }] }]
+        "something romantic for the evening" -> [{ "label": "romantic evening", "queries": [{ "text": "romantic restaurant", "named": false }, { "text": "wine bar", "named": false }, { "text": "viewpoint", "named": false }] }]
+        "замок вавелл" -> [{ "label": "Вавель", "queries": [{ "text": "Wawel Castle", "named": true }] }]
+        Only if the message has no wish at all, such as random letters, return one step with queries "historical landmark", "museum" and "park", all named false.
+        """;
+
     private const string PickPrompt =
         """
         You are a travel guide that proposes the next stop on a map.
         The message has "Current start", "User request" and "Places nearby".
+        It may also have "Current step" and "Upcoming steps".
         Places nearby is a numbered list of real places near the start, found on Google Maps.
         Each line has the number, the name, the type and the distance from the start.
-        Pick up to 5 places from that list that best match the user request. Use only numbers from the list.
-        If the user request is empty, pick the most interesting places.
+        Pick up to 10 places from that list that match the user request. Use only numbers from the list.
+        When at least 10 places fit, return 10. Return fewer only when fewer places in the list fit.
+        A reasonable match is enough. Do not narrow the list to the two or three best places.
+        If the user request is empty, pick the most interesting places, up to 10.
+        If "Current step" is present, every picked place must fit that step.
+        If "Upcoming steps" is present, mention those steps in text, in that order, and say they come after the user picks one of these places. Do not pick places for the later steps.
         A place several kilometers away is fine when the user named that specific place. Include it and mention how far it is.
         A type of place, such as a cafe or a park, should stay close to the start.
-        Pick places a visitor can go to or see. Skip travel agencies, tour operators, offices and shops unless the user asks for them.
+        Pick places a visitor can go to or see. Skip travel agencies, tour operators and offices unless the user asks for them.
         Reply with one JSON object and no other text. Use this shape:
         {
           "text": "short reply to the user",
@@ -117,6 +154,8 @@ public sealed class RouteService
                 "Start lat must be between -90 and 90, lng between -180 and 180.");
         }
 
+        var mode = ParseMode(request.Mode);
+
         if (string.IsNullOrWhiteSpace(_apiKey))
         {
             throw new RouteCallException(
@@ -134,14 +173,13 @@ public sealed class RouteService
         var start = request.Start;
         var prompt = request.Prompt?.Trim() ?? "";
         var client = new ChatClient(_model, _apiKey);
-
-        var queries = prompt.Length == 0
-            ? DefaultQueries
-            : await BuildQueriesAsync(client, prompt, cancellationToken);
+        var search = await ResolveSearchAsync(client, mode, prompt, request.Step, cancellationToken);
 
         _logger.LogInformation(
-            "Places queries: {Queries}",
-            string.Join(" | ", queries.Select(query => query.Named ? $"{query.Text} (named)" : query.Text)));
+            "Route mode {Mode}. Queries: {Queries}. Plan steps left: {PlanCount}",
+            mode,
+            string.Join(" | ", search.Queries.Select(query => query.Named ? $"{query.Text} (named)" : query.Text)),
+            search.Plan.Count);
 
         var excludedPlaceIds = (request.Visited ?? [])
             .Append(start.GooglePlaceId)
@@ -149,19 +187,22 @@ public sealed class RouteService
             .Select(id => id!.Trim())
             .ToHashSet(StringComparer.Ordinal);
 
-        var places = await FindNearbyAsync(queries, startLat, startLng, excludedPlaceIds, cancellationToken);
+        var places = await FindNearbyAsync(search.Queries, startLat, startLng, excludedPlaceIds, cancellationToken);
 
         var picked = await CompleteJsonAsync<ModelRoute>(
             client,
             PickPrompt,
-            BuildPickMessage(start, startLat, startLng, prompt, places),
+            BuildPickMessage(
+                start,
+                startLat,
+                startLng,
+                search.RequestText,
+                search.StepLabel,
+                search.Upcoming,
+                places),
             cancellationToken);
 
-        var choices = (picked.Locations ?? [])
-            .Where(choice => choice.N >= 1 && choice.N <= places.Count)
-            .DistinctBy(choice => choice.N)
-            .Take(StopCount)
-            .ToList();
+        var choices = SelectChoices(picked.Locations, places);
 
         var httpClient = _httpClientFactory.CreateClient();
         var photos = await Task.WhenAll(choices.Select(choice =>
@@ -170,6 +211,7 @@ public sealed class RouteService
         return new RouteResponse
         {
             Text = picked.Text ?? "",
+            Plan = search.Plan,
             Locations = choices.Select((choice, index) =>
             {
                 var place = places[choice.N - 1];
@@ -187,6 +229,152 @@ public sealed class RouteService
                 };
             }).ToList()
         };
+    }
+
+    private static string ParseMode(string? mode)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+            return "spot";
+
+        var value = mode.Trim();
+        if (value.Equals("spot", StringComparison.OrdinalIgnoreCase))
+            return "spot";
+        if (value.Equals("plan", StringComparison.OrdinalIgnoreCase))
+            return "plan";
+
+        throw new RouteCallException(
+            StatusCodes.Status400BadRequest,
+            "Mode must be spot or plan.");
+    }
+
+    private async Task<SearchRequest> ResolveSearchAsync(
+        ChatClient client,
+        string mode,
+        string prompt,
+        PlanStep? step,
+        CancellationToken cancellationToken)
+    {
+        if (mode == "plan" && step is not null)
+        {
+            var queries = ReadStepQueries(step);
+            var label = step.Label?.Trim() ?? "";
+            var requestText = label.Length > 0 ? label : prompt;
+            return new SearchRequest(queries, [], requestText, label, []);
+        }
+
+        if (prompt.Length == 0)
+            return new SearchRequest(DefaultQueries, [], "", null, []);
+
+        if (mode == "spot")
+        {
+            var queries = await BuildQueriesAsync(client, prompt, cancellationToken);
+            return new SearchRequest(queries, [], prompt, null, []);
+        }
+
+        var steps = await BuildPlanAsync(client, prompt, cancellationToken);
+        if (steps.Count == 0)
+        {
+            var queries = await BuildQueriesAsync(client, prompt, cancellationToken);
+            return new SearchRequest(queries, [], prompt, null, []);
+        }
+
+        var plan = steps.Skip(1).Select(ToPlanStep).ToList();
+        var upcoming = plan
+            .Select(item => item.Label?.Trim() ?? "")
+            .Where(label => label.Length > 0)
+            .ToList();
+        return new SearchRequest(steps[0].Queries, plan, prompt, steps[0].Label, upcoming);
+    }
+
+    private static async Task<List<ResolvedStep>> BuildPlanAsync(
+        ChatClient client,
+        string prompt,
+        CancellationToken cancellationToken)
+    {
+        var result = await CompleteJsonAsync<ModelPlan>(client, PlanPrompt, prompt, cancellationToken);
+        return ParseSteps(result.Steps);
+    }
+
+    private static List<ResolvedStep> ParseSteps(List<JsonElement>? raw)
+    {
+        var steps = new List<ResolvedStep>();
+        foreach (var item in raw ?? [])
+        {
+            if (item.ValueKind != JsonValueKind.Object ||
+                !TryGetProperty(item, "queries", out var queriesProp) ||
+                queriesProp.ValueKind != JsonValueKind.Array)
+                continue;
+
+            var queries = ParseQueries(queriesProp.EnumerateArray().ToList());
+            if (queries.Length == 0)
+                continue;
+
+            var label = "";
+            if (TryGetProperty(item, "label", out var labelProp) && labelProp.ValueKind == JsonValueKind.String)
+                label = labelProp.GetString()?.Trim() ?? "";
+            if (label.Length == 0)
+                label = queries[0].Text;
+            if (label.Length > 80)
+                label = label[..80].Trim();
+
+            steps.Add(new ResolvedStep(label, queries));
+            if (steps.Count == MaxPlanSteps)
+                break;
+        }
+
+        return steps;
+    }
+
+    private static PlaceQuery[] ReadStepQueries(PlanStep step)
+    {
+        var queries = (step.Queries ?? [])
+            .Select(query => new PlaceQuery((query.Text ?? "").Trim(), query.Named))
+            .Where(query => query.Text.Length > 0)
+            .DistinctBy(query => query.Text, StringComparer.OrdinalIgnoreCase)
+            .Take(MaxQueries)
+            .ToArray();
+
+        if (queries.Length == 0)
+        {
+            throw new RouteCallException(
+                StatusCodes.Status400BadRequest,
+                "Step needs at least one query with text.");
+        }
+
+        return queries;
+    }
+
+    private static PlanStep ToPlanStep(ResolvedStep step) => new()
+    {
+        Label = step.Label,
+        Queries = step.Queries.Select(query => new PlanQuery
+        {
+            Text = query.Text,
+            Named = query.Named
+        }).ToList()
+    };
+
+    private static List<ModelChoice> SelectChoices(List<ModelChoice>? picked, List<NearbyPlace> places)
+    {
+        var choices = (picked ?? [])
+            .Where(choice => choice.N >= 1 && choice.N <= places.Count)
+            .DistinctBy(choice => choice.N)
+            .Take(StopCount)
+            .ToList();
+
+        if (choices.Count == 0 || choices.Count >= StopCount)
+            return choices;
+
+        var used = choices.Select(choice => choice.N).ToHashSet();
+        var extras = Enumerable.Range(1, places.Count)
+            .Where(n => !used.Contains(n) && places[n - 1].DistanceMeters <= MaxStopMeters)
+            .OrderBy(n => places[n - 1].DistanceMeters)
+            .Take(StopCount - choices.Count);
+
+        foreach (var n in extras)
+            choices.Add(new ModelChoice { N = n, Description = "" });
+
+        return choices;
     }
 
     private static async Task<PlaceQuery[]> BuildQueriesAsync(
@@ -410,6 +598,8 @@ public sealed class RouteService
         double lat,
         double lng,
         string prompt,
+        string? stepLabel,
+        IReadOnlyList<string> upcoming,
         List<NearbyPlace> places)
     {
         var message = new StringBuilder();
@@ -418,6 +608,10 @@ public sealed class RouteService
             message.Append(start.Name.Trim()).Append(", ");
         message.Append(CultureInfo.InvariantCulture, $"coordinates {lat}, {lng}\n");
         message.Append("User request: ").Append(prompt).Append('\n');
+        if (!string.IsNullOrWhiteSpace(stepLabel))
+            message.Append("Current step: ").Append(stepLabel.Trim()).Append('\n');
+        if (upcoming.Count > 0)
+            message.Append("Upcoming steps: ").Append(string.Join(", ", upcoming)).Append('\n');
 
         if (places.Count == 0)
         {
@@ -510,6 +704,15 @@ public sealed class RouteService
 
     private sealed record PlaceQuery(string Text, bool Named);
 
+    private sealed record ResolvedStep(string Label, PlaceQuery[] Queries);
+
+    private sealed record SearchRequest(
+        PlaceQuery[] Queries,
+        List<PlanStep> Plan,
+        string RequestText,
+        string? StepLabel,
+        IReadOnlyList<string> Upcoming);
+
     private sealed record PlacePhotoRef(string Name, string Author, string AuthorUri);
 
     private sealed record PhotoLink(string Url, string Author, string AuthorUri);
@@ -526,6 +729,11 @@ public sealed class RouteService
     private sealed class ModelQueries
     {
         public List<JsonElement>? Queries { get; set; }
+    }
+
+    private sealed class ModelPlan
+    {
+        public List<JsonElement>? Steps { get; set; }
     }
 
     private sealed class ModelRoute
