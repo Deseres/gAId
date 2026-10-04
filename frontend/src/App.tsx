@@ -336,7 +336,7 @@ const handleStartSelect = useCallback((place: Place) => {
           )}
         </div>
 
-      <div className={`absolute top-0 w-full transition-all duration-500 z-0 ${isPanelExpanded && uiState === 'slider' ? 'h-[50dvh]' : 'h-[100dvh]'}`}>
+      <div className="absolute top-0 left-0 w-full h-[100dvh] transition-all duration-500 z-0">
         <MapBoard 
           confirmedRoute={route}
           pendingLocations={activePendingMessage?.pendingLocations || []}
