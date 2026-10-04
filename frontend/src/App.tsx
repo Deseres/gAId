@@ -7,8 +7,6 @@ import ChatBoard from './components/ChatBoard';
 import SliderBoard from './components/SliderBoard';
 import StartSearch from './components/StartSearch';
 
-const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
-const API_URL = 'https://guaid-back-cehzhqhqfzg2egan.swedencentral-01.azurewebsites.net/';
 const ROUTE_KEY = 'guaid.route';
 const PLAN_QUEUE_KEY = 'guaid.planQueue';
 
@@ -26,6 +24,7 @@ export default function App() {
     JSON.parse(localStorage.getItem(PLAN_QUEUE_KEY) ?? '[]')
   );
   const [searchMode, setSearchMode] = useState<SearchMode>('spot');
+  const [mapsKey, setMapsKey] = useState<string | null>(null);
   
   const [messages, setMessages] = useState<Message[]>([]);
   const [isPanelExpanded, setIsPanelExpanded] = useState(true);
@@ -41,6 +40,24 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(PLAN_QUEUE_KEY, JSON.stringify(planQueue));
   }, [planQueue]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/config')
+      .then(response => {
+        if (!response.ok) throw new Error('Config request failed');
+        return response.json();
+      })
+      .then(data => {
+        if (!cancelled) setMapsKey(data.googleMapsApiKey ?? '');
+      })
+      .catch(() => {
+        if (!cancelled) setMapsKey('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (route.length === 0) {
@@ -72,7 +89,7 @@ export default function App() {
       payload.step = step;
     }
 
-    const response = await fetch(`${API_URL}/api/route`, {
+    const response = await fetch('/api/route', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -113,8 +130,8 @@ const handleStartSelect = useCallback((place: Place) => {
     const typingId = `typing_${Date.now()}`;
     setMessages(prev => [
       ...prev, 
-      ...(text ? [{ id: `user_${Date.now()}`, sender: 'user', text }] : []),
-      { id: typingId, sender: 'ai', isTyping: true }
+      ...(text ? [{ id: `user_${Date.now()}`, sender: 'user' as const, text }] : []),
+      { id: typingId, sender: 'ai' as const, isTyping: true, text: '' }
     ]);
     setIsPanelExpanded(true);
     setActivePreviewId(null);
@@ -154,7 +171,7 @@ const handleStartSelect = useCallback((place: Place) => {
     const typingId = `typing_auto_${Date.now()}`;
     setMessages(prev => [
       ...prev,
-      { id: typingId, sender: 'ai', isTyping: true }
+      { id: typingId, sender: 'ai' as const, isTyping: true, text: '' }
     ]);
 
     try {
@@ -290,8 +307,16 @@ const handleStartSelect = useCallback((place: Place) => {
     if (place) setSelectedRoutePlace(place);
   };
 
+  if (mapsKey === null) {
+    return (
+      <div className="w-full h-[100dvh] bg-gray-100 flex items-center justify-center">
+        <img src="/logo.png" alt="guAId" className="h-16 w-16 object-contain" />
+      </div>
+    );
+  }
+
   return (
-    <APIProvider apiKey={API_KEY}>
+    <APIProvider apiKey={mapsKey}>
       <div className="relative w-full h-[100dvh] overflow-hidden bg-gray-100 font-['Inter',sans-serif]">
         <div className="absolute top-6 left-6 z-20 pointer-events-none flex items-center justify-between w-[calc(100%-3rem)]">
         <div className="bg-white p-2.5 rounded-2xl shadow-md pointer-events-auto flex items-center justify-center">

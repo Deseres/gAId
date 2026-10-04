@@ -13,6 +13,9 @@ appsettings.*.local.json
 # Deploy output
 deploy/
 
+# Frontend production build, generated into the API before publish
+Back/GuAId.Api/wwwroot/
+
 # User-specific files
 *.rsuser
 *.suo

@@ -12,7 +12,20 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Remove="wwwroot\**" />
     <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
   </ItemGroup>
+
+  <Target Name="BuildFrontend" AfterTargets="ComputeFilesToPublish">
+    <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)\..\..\frontend" />
+    <ItemGroup>
+      <_FrontendFiles Include="$(MSBuildProjectDirectory)\wwwroot\**" />
+      <ResolvedFileToPublish Include="@(_FrontendFiles->'%(FullPath)')">
+        <RelativePath>wwwroot\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 
 </Project>

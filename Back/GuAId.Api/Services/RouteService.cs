@@ -168,14 +168,14 @@ public sealed class RouteService
         {
             throw new RouteCallException(
                 StatusCodes.Status500InternalServerError,
-                "Set OpenAI:ApiKey in appsettings.Development.json.");
+                "OpenAI API key is not configured.");
         }
 
         if (string.IsNullOrWhiteSpace(_googleApiKey))
         {
             throw new RouteCallException(
                 StatusCodes.Status500InternalServerError,
-                "Set Google:ApiKey in appsettings.Development.json.");
+                "Google API key is not configured.");
         }
 
         var start = request.Start;

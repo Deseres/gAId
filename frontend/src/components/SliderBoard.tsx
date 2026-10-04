@@ -100,7 +100,7 @@ interface SliderBoardProps {
 
 export default function SliderBoard({ locations, messageId, activePlaceId, onSwipeUp, onActiveChange, onOpenModal }: SliderBoardProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isProgrammaticScroll = useRef(false);
 
   useEffect(() => {
