@@ -336,16 +336,16 @@ const handleStartSelect = useCallback((place: Place) => {
           )}
         </div>
 
-        <div className={`absolute top-0 w-full transition-all duration-500 z-0 ${isPanelExpanded && uiState === 'slider' ? 'h-[50dvh]' : 'h-[100dvh]'}`}>
-          <MapBoard 
-            confirmedRoute={route}
-            pendingLocations={activePendingMessage?.pendingLocations || []}
-            activePreviewId={activePreviewId}
-            isHalfScreen={isPanelExpanded && uiState === 'slider'}
-            onPreviewClick={handlePreviewClick}
-            onRouteClick={handleRouteClick}
-          />
-        </div>
+      <div className={`absolute top-0 w-full transition-all duration-500 z-0 ${isPanelExpanded && uiState === 'slider' ? 'h-[50dvh]' : 'h-[100dvh]'}`}>
+        <MapBoard 
+          confirmedRoute={route}
+          pendingLocations={activePendingMessage?.pendingLocations || []}
+          activePreviewId={activePreviewId}
+          isHalfScreen={isPanelExpanded && uiState === 'slider'}
+          onPreviewClick={handlePreviewClick}
+          onRouteClick={handleRouteClick}
+        />
+      </div>
 
 <div className={`absolute bottom-0 w-full md:max-w-md md:left-1/2 md:-translate-x-1/2 bg-white/95 backdrop-blur-xl transition-all duration-500 ease-in-out shadow-[0_-10px_50px_rgba(0,0,0,0.1)] flex flex-col z-10
   ${isPanelExpanded ? (uiState === 'slider' ? 'h-[50dvh]' : 'max-h-[85dvh] h-[85dvh]') : 'max-h-[15dvh] h-[15dvh]'} rounded-t-[2rem]
