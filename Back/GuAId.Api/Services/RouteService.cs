@@ -101,14 +101,20 @@ public sealed class RouteService
         {
           "text": "short reply to the user",
           "locations": [
-            { "n": 1, "description": "why this place fits this step" }
+            { "n": 1, "description": "why this place fits this step", "rating_summary": "what the rating and reviews say" }
           ]
         }
         If nothing in the list fits the request, or the list is empty, locations is [].
         Then text says that you did not find this nearby and suggests something else to ask for.
-        description is one short sentence about this place. Do not start it with the place name.
-        Base it on the name and the type. Do not invent menus, prices or opening hours.
-        Write text and description in the language of the User request text, not the language of the country.
+        description is one short sentence about why this place fits. Do not start it with the place name.
+        rating_summary states the score out of 5 and the review count, such as "4.5 из 5, 5344 отзыва".
+        Add what visitors say only when that place's reviews line is not none, and only from that text.
+        If the rating is missing, rating_summary is an empty string.
+        If reviews is none, do not describe atmosphere, quality, service, reputation or a menu.
+        description then only says why this type of place fits the request.
+        Do not invent a rating, a review count, a price or opening hours.
+        Mention a price or opening hours in description only when that place's line includes them.
+        Write text, description and rating_summary in the language of the User request text, not the language of the country.
         If the User request is empty, write in English.
         """;
 
@@ -223,6 +229,14 @@ public sealed class RouteService
                     Lat = place.Lat,
                     Lng = place.Lng,
                     Description = choice.Description ?? "",
+                    Rating = place.Rating,
+                    UserRatingCount = place.UserRatingCount,
+                    RatingSummary = choice.RatingSummary ?? "",
+                    ReviewSummary = place.ReviewSummary,
+                    PriceLevel = place.PriceLevel,
+                    Price = place.Price,
+                    OpenNow = place.OpenNow,
+                    OpeningHours = place.OpeningHours.ToList(),
                     PhotoUrl = photo?.Url ?? "",
                     PhotoAuthor = photo?.Author ?? "",
                     PhotoAuthorUri = photo?.AuthorUri ?? ""
@@ -525,6 +539,10 @@ public sealed class RouteService
                 if (!seen.Add(place.Id))
                     continue;
 
+                var hours = place.RegularOpeningHours?.WeekdayDescriptions?
+                    .Select(line => line.Trim())
+                    .Where(line => line.Length > 0)
+                    .ToList() ?? [];
                 places.Add(new NearbyPlace(
                     place.Id,
                     name,
@@ -532,7 +550,14 @@ public sealed class RouteService
                     place.Location.Latitude,
                     place.Location.Longitude,
                     (int)Math.Round(distance),
-                    FirstPhoto(place)));
+                    FirstPhoto(place),
+                    place.Rating,
+                    place.UserRatingCount,
+                    FormatPriceLevel(place.PriceLevel),
+                    FormatPriceRange(place.PriceRange),
+                    place.RegularOpeningHours?.OpenNow,
+                    hours,
+                    place.ReviewSummary?.Text?.Text?.Trim() ?? ""));
             }
         }
 
@@ -556,7 +581,7 @@ public sealed class RouteService
         request.Headers.Add("X-Goog-Api-Key", _googleApiKey);
         request.Headers.Add(
             "X-Goog-FieldMask",
-            "places.id,places.displayName,places.location,places.primaryTypeDisplayName,places.businessStatus,places.photos");
+            "places.id,places.displayName,places.location,places.primaryTypeDisplayName,places.businessStatus,places.photos,places.rating,places.userRatingCount,places.priceLevel,places.priceRange,places.regularOpeningHours.openNow,places.regularOpeningHours.weekdayDescriptions,places.reviewSummary.text");
         request.Content = JsonContent.Create(new
         {
             textQuery = query.Text,
@@ -624,7 +649,22 @@ public sealed class RouteService
         {
             var place = places[i];
             var type = string.IsNullOrWhiteSpace(place.Type) ? "place" : place.Type;
-            message.Append(CultureInfo.InvariantCulture, $"{i + 1}. {place.Name} | {type} | {place.DistanceMeters} m\n");
+            message.Append(CultureInfo.InvariantCulture, $"{i + 1}. {place.Name} | {type} | {place.DistanceMeters} m");
+            message.Append(" | rating: ").Append(FormatRating(place.Rating, place.UserRatingCount));
+            message.Append(" | price: ").Append(FormatPriceLine(place.PriceLevel, place.Price));
+            message.Append(" | open now: ").Append(place.OpenNow switch
+            {
+                true => "yes",
+                false => "no",
+                _ => "unknown"
+            });
+            message.Append(" | hours: ").Append(place.OpeningHours.Count == 0
+                ? "none"
+                : string.Join("; ", place.OpeningHours));
+            message.Append(" | reviews: ").Append(place.ReviewSummary.Length == 0
+                ? "none"
+                : Clip(place.ReviewSummary, 400));
+            message.Append('\n');
         }
 
         return message.ToString();
@@ -717,6 +757,75 @@ public sealed class RouteService
 
     private sealed record PhotoLink(string Url, string Author, string AuthorUri);
 
+    private static string FormatRating(double? rating, int? count)
+    {
+        if (rating is not double value)
+            return "none";
+
+        var text = value.ToString("0.0", CultureInfo.InvariantCulture);
+        return count is int reviews
+            ? $"{text} from {reviews} reviews"
+            : text;
+    }
+
+    private static string FormatPriceLine(string priceLevel, string price)
+    {
+        if (priceLevel.Length == 0 && price.Length == 0)
+            return "none";
+        if (priceLevel.Length == 0)
+            return price;
+        if (price.Length == 0)
+            return priceLevel;
+        return $"{priceLevel}, {price}";
+    }
+
+    private static string FormatPriceLevel(string? level) => level switch
+    {
+        "PRICE_LEVEL_FREE" => "free",
+        "PRICE_LEVEL_INEXPENSIVE" => "inexpensive",
+        "PRICE_LEVEL_MODERATE" => "moderate",
+        "PRICE_LEVEL_EXPENSIVE" => "expensive",
+        "PRICE_LEVEL_VERY_EXPENSIVE" => "very expensive",
+        _ => ""
+    };
+
+    private static string FormatPriceRange(PlacePriceRange? range)
+    {
+        var start = FormatAmount(range?.StartPrice);
+        var end = FormatAmount(range?.EndPrice);
+        if (start.Length == 0 && end.Length == 0)
+            return "";
+
+        var amount = start.Length > 0 && end.Length > 0 && start != end
+            ? $"{start}–{end}"
+            : start.Length > 0 ? start : end;
+        var currency = range?.StartPrice?.CurrencyCode;
+        if (string.IsNullOrWhiteSpace(currency))
+            currency = range?.EndPrice?.CurrencyCode;
+        return string.IsNullOrWhiteSpace(currency) ? amount : $"{amount} {currency}";
+    }
+
+    private static string FormatAmount(PlaceMoney? money)
+    {
+        if (money is null)
+            return "";
+        if (string.IsNullOrWhiteSpace(money.Units) && money.Nanos == 0)
+            return "";
+        if (!long.TryParse(money.Units, NumberStyles.Integer, CultureInfo.InvariantCulture, out var units))
+            units = 0;
+        if (money.Nanos == 0)
+            return units.ToString(CultureInfo.InvariantCulture);
+
+        var value = units + money.Nanos / 1_000_000_000d;
+        return value.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
+    private static string Clip(string text, int max)
+    {
+        var flat = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return flat.Length <= max ? flat : flat[..max].Trim() + "...";
+    }
+
     private sealed record NearbyPlace(
         string Id,
         string Name,
@@ -724,7 +833,14 @@ public sealed class RouteService
         double Lat,
         double Lng,
         int DistanceMeters,
-        PlacePhotoRef? Photo);
+        PlacePhotoRef? Photo,
+        double? Rating,
+        int? UserRatingCount,
+        string PriceLevel,
+        string Price,
+        bool? OpenNow,
+        IReadOnlyList<string> OpeningHours,
+        string ReviewSummary);
 
     private sealed class ModelQueries
     {
@@ -748,6 +864,9 @@ public sealed class RouteService
         public int N { get; set; }
 
         public string? Description { get; set; }
+
+        [JsonPropertyName("rating_summary")]
+        public string? RatingSummary { get; set; }
     }
 
     private sealed class PlacesSearchResponse
@@ -767,7 +886,47 @@ public sealed class RouteService
 
         public string? BusinessStatus { get; set; }
 
+        public double? Rating { get; set; }
+
+        public int? UserRatingCount { get; set; }
+
+        public string? PriceLevel { get; set; }
+
+        public PlacePriceRange? PriceRange { get; set; }
+
+        public PlaceOpeningHours? RegularOpeningHours { get; set; }
+
+        public PlaceReviewSummary? ReviewSummary { get; set; }
+
         public List<PlacePhoto>? Photos { get; set; }
+    }
+
+    private sealed class PlacePriceRange
+    {
+        public PlaceMoney? StartPrice { get; set; }
+
+        public PlaceMoney? EndPrice { get; set; }
+    }
+
+    private sealed class PlaceMoney
+    {
+        public string? CurrencyCode { get; set; }
+
+        public string? Units { get; set; }
+
+        public int Nanos { get; set; }
+    }
+
+    private sealed class PlaceOpeningHours
+    {
+        public bool? OpenNow { get; set; }
+
+        public List<string>? WeekdayDescriptions { get; set; }
+    }
+
+    private sealed class PlaceReviewSummary
+    {
+        public PlaceText? Text { get; set; }
     }
 
     private sealed class PlacePhoto

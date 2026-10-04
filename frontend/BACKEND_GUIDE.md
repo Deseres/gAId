@@ -55,7 +55,23 @@
       "google_place_id": "ChIJFctE3xFbFkcR681ABM8ayCQ",
       "lat": 50.063,
       "lng": 19.939,
-      "description": "Уютное кафе с волшебной атмосферой.",
+      "description": "Кафе рядом, умеренные цены.",
+      "rating": 4.5,
+      "user_rating_count": 5344,
+      "rating_summary": "4.5 из 5, 5344 отзыва",
+      "review_summary": "",
+      "price_level": "moderate",
+      "price": "20–60 PLN",
+      "open_now": false,
+      "opening_hours": [
+        "Monday: 9:00 AM – 11:00 PM",
+        "Tuesday: 9:00 AM – 11:00 PM",
+        "Wednesday: 9:00 AM – 11:00 PM",
+        "Thursday: 9:00 AM – 11:00 PM",
+        "Friday: 9:00 AM – 12:00 AM",
+        "Saturday: 9:00 AM – 12:00 AM",
+        "Sunday: 9:00 AM – 11:00 PM"
+      ],
       "photo_url": "https://lh3.googleusercontent.com/place-photo",
       "photo_author": "Jane Doe",
       "photo_author_uri": "https://maps.google.com/maps/contrib/123"
@@ -67,14 +83,29 @@
 
 - `text` — сообщение для чата. Показывать как есть.
 - `locations` — от 0 до 10 мест для одной позиции. Все они реальные, нашлись в Google Maps, без текущего старта, без мест из `visited` и без закрытых. Обычный запрос ищется в радиусе 3 км. Если человек назвал конкретное место, оно может быть до 25 км от старта.
-- Если подходящих мест меньше 10, но они есть, бэкенд добирает ближайшие из того же поиска. У добранных `description` может быть пустым. Карточку всё равно показываем.
+- Если подходящих мест меньше 10, но они есть, бэкенд добирает ближайшие из того же поиска. У добранных `description` и `rating_summary` могут быть пустыми. Карточку всё равно показываем.
 - Если подходящего рядом нет, `locations` пустой, а `text` объясняет это и предлагает, что спросить ещё. Пустой список — нормальный ответ, не ошибка. В этом случае список не добивается.
-- `name`, `google_place_id`, `lat`, `lng` приходят от Google. `description` пишет модель.
+- `name`, `google_place_id`, `lat`, `lng` приходят от Google. `description` и `rating_summary` пишет модель.
+- `rating`, `user_rating_count`, `price_level`, `price`, `open_now`, `opening_hours` и `review_summary` приходят от Google. Если поля нет, число будет `null`, строка пустой, массив пустым. Это нормальный ответ, строку на карточке тогда не показываем.
+
+## Что показать на карточке
+
+Порядок на карточке: фото, название, `rating_summary`, цена, открыто или закрыто, `description`. Часы — по раскрытию, не все семь строк сразу.
+
+- `rating_summary` — главная строка про рейтинг, на языке запроса. Обычно это «4.5 из 5, 5344 отзыва». Если у Google есть сводка отзывов, модель дописывает её сюда же. Пустую строку не показываем. Если пусто и `rating_summary`, и при этом `rating` не `null`, можно собрать запасную подпись из `rating` и `user_rating_count`.
+- `review_summary` на карточку не выводим. Это сырой английский текст Google, он часто пустой, и модель уже пересказала его в `rating_summary`.
+- Цену берём из `price`, например `20–60 PLN`. Если `price` пустой, показываем `price_level`: `free`, `inexpensive`, `moderate`, `expensive`, `very expensive`. Если пусты оба, цену прячем.
+- `open_now: true` — «открыто», `false` — «закрыто». `null` — ничего не пишем.
+- `opening_hours` — до семи строк недели так, как их отдал Google, обычно по-английски. Не переводим на клиенте. Пустой массив прячем.
+- `description` показываем как есть. У места, которым бэкенд добрал список до 10, `description` и `rating_summary` могут быть пустыми. Рейтинг, цена и часы при этом всё равно приходят от Google, их показываем.
+
+В `localStorage` вместе с точкой маршрута можно класть рейтинг, цену, часы и тексты. `photo_url` по-прежнему не кладём. В `start` новые поля слать не нужно.
+
 - `plan` — хвост очереди. В `spot` он всегда `[]`. В `plan` там следующие шаги, без текущего. Поле есть всегда.
 - Поля фото описаны ниже, в разделе «Картинки».
 
-Как бэкенд находит места в `spot`: модель превращает `prompt` в 1–3 поисковые фразы для Google, например «хочу что-то романтичное» превращается в `romantic restaurant`, `wine bar`, `viewpoint`. Для каждой фразы она отмечает, это имя одного места или тип места. Тип ищется в 3 км от старта. Имя конкретного места, даже с опечаткой, ищется до 25 км. Модель выбирает из найденного до 10 мест и пишет `text` и `description`. Поэтому `prompt` может быть любым: на любом языке, размытым, с опечатками.
-- `text` и `description` приходят на языке запроса. Если `prompt` пустой, ответ на английском.
+Как бэкенд находит места в `spot`: модель превращает `prompt` в 1–3 поисковые фразы для Google, например «хочу что-то романтичное» превращается в `romantic restaurant`, `wine bar`, `viewpoint`. Для каждой фразы она отмечает, это имя одного места или тип места. Тип ищется в 3 км от старта. Имя конкретного места, даже с опечаткой, ищется до 25 км. Модель выбирает из найденного до 10 мест и пишет `text`, `description` и `rating_summary`. Поэтому `prompt` может быть любым: на любом языке, размытым, с опечатками.
+- `text`, `description` и `rating_summary` приходят на языке запроса. Если `prompt` пустой, ответ на английском. `opening_hours` и `review_summary` остаются на языке Google.
 
 ## Режим plan
 
@@ -181,6 +212,14 @@ type Place = {
   lat: number;
   lng: number;
   description?: string;
+  rating?: number | null;
+  user_rating_count?: number | null;
+  rating_summary?: string;
+  review_summary?: string;
+  price_level?: string;
+  price?: string;
+  open_now?: boolean | null;
+  opening_hours?: string[];
   photo_url?: string;
   photo_author?: string;
   photo_author_uri?: string;

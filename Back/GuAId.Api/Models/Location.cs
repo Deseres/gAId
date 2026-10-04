@@ -15,6 +15,28 @@ public sealed class Location
 
     public string Description { get; set; } = "";
 
+    public double? Rating { get; set; }
+
+    [JsonPropertyName("user_rating_count")]
+    public int? UserRatingCount { get; set; }
+
+    [JsonPropertyName("rating_summary")]
+    public string RatingSummary { get; set; } = "";
+
+    [JsonPropertyName("review_summary")]
+    public string ReviewSummary { get; set; } = "";
+
+    [JsonPropertyName("price_level")]
+    public string PriceLevel { get; set; } = "";
+
+    public string Price { get; set; } = "";
+
+    [JsonPropertyName("open_now")]
+    public bool? OpenNow { get; set; }
+
+    [JsonPropertyName("opening_hours")]
+    public List<string> OpeningHours { get; set; } = [];
+
     [JsonPropertyName("photo_url")]
     public string PhotoUrl { get; set; } = "";
 
