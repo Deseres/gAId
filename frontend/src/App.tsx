@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { APIProvider } from '@vis.gl/react-google-maps';
 import { motion } from 'framer-motion';
 import type { Place, Message, UIState } from './types';
@@ -93,15 +93,15 @@ export default function App() {
     return { text: data.text, locations: processedLocations, plan: data.plan || [] };
   };
 
-  const handleStartSelect = (place: Place) => {
-    setRoute([place]);
-    setMessages(prev => [
-      ...prev,
-      { id: `user_${Date.now()}`, sender: 'user', text: place.name },
-      { id: `ai_${Date.now()}`, sender: 'ai', text: "Great start! What are we going to do? Any specific goals?" }
-    ]);
-    setIsPanelExpanded(true);
-  };
+const handleStartSelect = useCallback((place: Place) => {
+  setRoute([place]);
+  setMessages(prev => [
+    ...prev,
+    { id: `user_${Date.now()}`, sender: 'user', text: place.name },
+    { id: `ai_${Date.now()}`, sender: 'ai', text: "Great start! What are we going to do? Any specific goals?" }
+  ]);
+  setIsPanelExpanded(true);
+}, []);
 
   const handleSendMessage = async (text: string) => {
     if (route.length === 0) return;
