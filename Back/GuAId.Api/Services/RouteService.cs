@@ -18,6 +18,7 @@ public sealed class RouteService
     private const double MaxNamedPlaceMeters = 25000;
     private const double SamePlaceMeters = 30;
     private const double MetersPerDegree = 111320;
+    private const int PhotoMaxWidthPx = 800;
 
     private static readonly PlaceQuery[] DefaultQueries =
     [
@@ -156,26 +157,35 @@ public sealed class RouteService
             BuildPickMessage(start, startLat, startLng, prompt, places),
             cancellationToken);
 
+        var choices = (picked.Locations ?? [])
+            .Where(choice => choice.N >= 1 && choice.N <= places.Count)
+            .DistinctBy(choice => choice.N)
+            .Take(StopCount)
+            .ToList();
+
+        var httpClient = _httpClientFactory.CreateClient();
+        var photos = await Task.WhenAll(choices.Select(choice =>
+            ResolvePhotoAsync(httpClient, places[choice.N - 1].Photo, cancellationToken)));
+
         return new RouteResponse
         {
             Text = picked.Text ?? "",
-            Locations = (picked.Locations ?? [])
-                .Where(choice => choice.N >= 1 && choice.N <= places.Count)
-                .DistinctBy(choice => choice.N)
-                .Take(StopCount)
-                .Select(choice =>
+            Locations = choices.Select((choice, index) =>
+            {
+                var place = places[choice.N - 1];
+                var photo = photos[index];
+                return new Location
                 {
-                    var place = places[choice.N - 1];
-                    return new Location
-                    {
-                        Name = place.Name,
-                        GooglePlaceId = place.Id,
-                        Lat = place.Lat,
-                        Lng = place.Lng,
-                        Description = choice.Description ?? ""
-                    };
-                })
-                .ToList()
+                    Name = place.Name,
+                    GooglePlaceId = place.Id,
+                    Lat = place.Lat,
+                    Lng = place.Lng,
+                    Description = choice.Description ?? "",
+                    PhotoUrl = photo?.Url ?? "",
+                    PhotoAuthor = photo?.Author ?? "",
+                    PhotoAuthorUri = photo?.AuthorUri ?? ""
+                };
+            }).ToList()
         };
     }
 
@@ -333,7 +343,8 @@ public sealed class RouteService
                     place.PrimaryTypeDisplayName?.Text?.Trim() ?? "",
                     place.Location.Latitude,
                     place.Location.Longitude,
-                    (int)Math.Round(distance)));
+                    (int)Math.Round(distance),
+                    FirstPhoto(place)));
             }
         }
 
@@ -357,7 +368,7 @@ public sealed class RouteService
         request.Headers.Add("X-Goog-Api-Key", _googleApiKey);
         request.Headers.Add(
             "X-Goog-FieldMask",
-            "places.id,places.displayName,places.location,places.primaryTypeDisplayName,places.businessStatus");
+            "places.id,places.displayName,places.location,places.primaryTypeDisplayName,places.businessStatus,places.photos");
         request.Content = JsonContent.Create(new
         {
             textQuery = query.Text,
@@ -425,6 +436,64 @@ public sealed class RouteService
         return message.ToString();
     }
 
+    private static PlacePhotoRef? FirstPhoto(PlaceHit place)
+    {
+        var photo = place.Photos?.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Name));
+        if (photo?.Name is not string name)
+            return null;
+
+        var author = photo.AuthorAttributions?
+            .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.DisplayName));
+        var authorUri = author?.Uri?.Trim() ?? "";
+        if (authorUri.StartsWith("//", StringComparison.Ordinal))
+            authorUri = "https:" + authorUri;
+
+        return new PlacePhotoRef(name, author?.DisplayName?.Trim() ?? "", authorUri);
+    }
+
+    private async Task<PhotoLink?> ResolvePhotoAsync(
+        HttpClient httpClient,
+        PlacePhotoRef? photo,
+        CancellationToken cancellationToken)
+    {
+        if (photo is null)
+            return null;
+
+        var segments = photo.Name.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Select(Uri.EscapeDataString);
+        var url = "https://places.googleapis.com/v1/"
+            + string.Join('/', segments)
+            + $"/media?maxWidthPx={PhotoMaxWidthPx}&skipHttpRedirect=true";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add("X-Goog-Api-Key", _googleApiKey);
+
+        try
+        {
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Place photo request failed with status {StatusCode}",
+                    (int)response.StatusCode);
+                return null;
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<PhotoMediaResponse>(
+                JsonOptions,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(payload?.PhotoUri))
+                return null;
+
+            return new PhotoLink(payload.PhotoUri, photo.Author, photo.AuthorUri);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Place photo request failed");
+            return null;
+        }
+    }
+
     private static double DistanceMeters(double lat1, double lng1, double lat2, double lng2)
     {
         const double earthRadius = 6371000;
@@ -441,7 +510,18 @@ public sealed class RouteService
 
     private sealed record PlaceQuery(string Text, bool Named);
 
-    private sealed record NearbyPlace(string Id, string Name, string Type, double Lat, double Lng, int DistanceMeters);
+    private sealed record PlacePhotoRef(string Name, string Author, string AuthorUri);
+
+    private sealed record PhotoLink(string Url, string Author, string AuthorUri);
+
+    private sealed record NearbyPlace(
+        string Id,
+        string Name,
+        string Type,
+        double Lat,
+        double Lng,
+        int DistanceMeters,
+        PlacePhotoRef? Photo);
 
     private sealed class ModelQueries
     {
@@ -478,6 +558,27 @@ public sealed class RouteService
         public PlaceText? PrimaryTypeDisplayName { get; set; }
 
         public string? BusinessStatus { get; set; }
+
+        public List<PlacePhoto>? Photos { get; set; }
+    }
+
+    private sealed class PlacePhoto
+    {
+        public string? Name { get; set; }
+
+        public List<PhotoAuthor>? AuthorAttributions { get; set; }
+    }
+
+    private sealed class PhotoAuthor
+    {
+        public string? DisplayName { get; set; }
+
+        public string? Uri { get; set; }
+    }
+
+    private sealed class PhotoMediaResponse
+    {
+        public string? PhotoUri { get; set; }
     }
 
     private sealed class PlaceText

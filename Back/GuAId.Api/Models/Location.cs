@@ -14,4 +14,13 @@ public sealed class Location
     public double Lng { get; set; }
 
     public string Description { get; set; } = "";
+
+    [JsonPropertyName("photo_url")]
+    public string PhotoUrl { get; set; } = "";
+
+    [JsonPropertyName("photo_author")]
+    public string PhotoAuthor { get; set; } = "";
+
+    [JsonPropertyName("photo_author_uri")]
+    public string PhotoAuthorUri { get; set; } = "";
 }
