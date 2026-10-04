@@ -2,7 +2,9 @@ namespace GuAId.Api.Models;
 
 public sealed class RouteResponse
 {
-    public string City { get; set; } = "";
+    public string Text { get; set; } = "";
 
     public List<Location> Locations { get; set; } = [];
+
+    public List<PlanStep> Plan { get; set; } = [];
 }

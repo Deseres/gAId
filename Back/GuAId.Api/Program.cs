@@ -1,8 +1,11 @@
+using GuAId.Api.Services;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 builder.Services.AddControllers();
 builder.Services.AddHttpClient();
+builder.Services.AddScoped<RouteService>();
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
