@@ -102,6 +102,9 @@ export default function SliderBoard({ locations, messageId, activePlaceId, onSwi
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isProgrammaticScroll = useRef(false);
+  const isDragging = useRef(false);
+  const startX = useRef(0);
+  const scrollLeft = useRef(0);
 
   useEffect(() => {
     if (locations.length > 0 && !activePlaceId) {
@@ -159,14 +162,44 @@ export default function SliderBoard({ locations, messageId, activePlaceId, onSwi
     }, 150); // Ждем окончания ручного свайпа
   };
 
+  const handleMouseDown = (e: React.MouseEvent) => {
+    isDragging.current = true;
+    if (scrollContainerRef.current) {
+      startX.current = e.pageX - scrollContainerRef.current.offsetLeft;
+      scrollLeft.current = scrollContainerRef.current.scrollLeft;
+      // Временно отключаем snap, чтобы скролл шел плавно за мышкой
+      scrollContainerRef.current.style.scrollSnapType = 'none';
+    }
+  };
+
+  const handleMouseUpLeave = () => {
+    isDragging.current = false;
+    if (scrollContainerRef.current) {
+      // Возвращаем snap при отпускании мыши
+      scrollContainerRef.current.style.scrollSnapType = '';
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging.current || !scrollContainerRef.current) return;
+    e.preventDefault();
+    const x = e.pageX - scrollContainerRef.current.offsetLeft;
+    const walk = (x - startX.current) * 1.5; // Умножаем на 1.5 для скорости скролла
+    scrollContainerRef.current.scrollLeft = scrollLeft.current - walk;
+  };
+
   return (
     <div className="w-full h-full p-4 flex flex-col bg-gray-50 rounded-t-[2rem]">
-      <div 
-        ref={scrollContainerRef}
-        onScroll={handleScroll}
-        className="flex overflow-x-auto gap-4 snap-x snap-mandatory h-full pb-4 hide-scrollbar" 
-        style={{ scrollbarWidth: 'none' }}
-      >
+    <div 
+      ref={scrollContainerRef}
+      onScroll={handleScroll}
+      onMouseDown={handleMouseDown}
+      onMouseLeave={handleMouseUpLeave}
+      onMouseUp={handleMouseUpLeave}
+      onMouseMove={handleMouseMove}
+      className="flex overflow-x-auto gap-4 snap-x snap-mandatory h-full pb-4 hide-scrollbar cursor-grab active:cursor-grabbing" 
+      style={{ scrollbarWidth: 'none' }}
+    >
         <AnimatePresence>
           {locations.map(loc => (
             <div 
