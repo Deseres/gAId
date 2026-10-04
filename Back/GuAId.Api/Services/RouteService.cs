@@ -20,6 +20,7 @@ public sealed class RouteService
     private const double SamePlaceMeters = 30;
     private const double MetersPerDegree = 111320;
     private const int PhotoMaxWidthPx = 800;
+    private const int MaxPhotos = 10;
 
     private static readonly PlaceQuery[] DefaultQueries =
     [
@@ -56,8 +57,8 @@ public sealed class RouteService
         Reply with one JSON object and no other text:
         { "steps": [ { "label": "...", "queries": [ { "text": "...", "named": false } ] } ] }
         Each step is one stop. Each step has 1 to 3 short English queries that Google Maps understands.
-        label is a short name for the stop in the language of the message.
-        The message can be in any language. queries are always English.
+        label is a short English name for the stop.
+        The message can be in any language. labels and queries are always English. Never write a label in another language.
         Correct obvious misspellings of a place name to the real English name Google Maps uses.
         Set named to true only when text is the proper name of one particular place, such as "Wawel Castle".
         Set named to false when text is a type of place, a mood or an activity, such as "castle", "cafe" or "park".
@@ -71,13 +72,13 @@ public sealed class RouteService
         Keep a single step when it is unclear, such as a museum and coffee.
         A vague wish with no order is one step.
         Examples:
-        "поесть, потом барбер, потом в магаз" -> [{ "label": "поесть", "queries": [{ "text": "restaurant", "named": false }] }, { "label": "барбершоп", "queries": [{ "text": "barber shop", "named": false }] }, { "label": "магазин", "queries": [{ "text": "supermarket", "named": false }] }]
-        "кальян и покушать" -> [{ "label": "кальян и еда", "queries": [{ "text": "hookah lounge", "named": false }] }]
-        "кофе и десерт" -> [{ "label": "кофе", "queries": [{ "text": "cafe", "named": false }] }]
-        "барбер и магазин" -> [{ "label": "барбершоп", "queries": [{ "text": "barber shop", "named": false }] }, { "label": "магазин", "queries": [{ "text": "supermarket", "named": false }] }]
-        "музей и кофе" -> [{ "label": "музей и кофе", "queries": [{ "text": "museum", "named": false }, { "text": "cafe", "named": false }] }]
+        "поесть, потом барбер, потом в магаз" -> [{ "label": "food", "queries": [{ "text": "restaurant", "named": false }] }, { "label": "barber shop", "queries": [{ "text": "barber shop", "named": false }] }, { "label": "shop", "queries": [{ "text": "supermarket", "named": false }] }]
+        "кальян и покушать" -> [{ "label": "hookah and food", "queries": [{ "text": "hookah lounge", "named": false }] }]
+        "кофе и десерт" -> [{ "label": "coffee", "queries": [{ "text": "cafe", "named": false }] }]
+        "барбер и магазин" -> [{ "label": "barber shop", "queries": [{ "text": "barber shop", "named": false }] }, { "label": "shop", "queries": [{ "text": "supermarket", "named": false }] }]
+        "музей и кофе" -> [{ "label": "museum and coffee", "queries": [{ "text": "museum", "named": false }, { "text": "cafe", "named": false }] }]
         "something romantic for the evening" -> [{ "label": "romantic evening", "queries": [{ "text": "romantic restaurant", "named": false }, { "text": "wine bar", "named": false }, { "text": "viewpoint", "named": false }] }]
-        "замок вавелл" -> [{ "label": "Вавель", "queries": [{ "text": "Wawel Castle", "named": true }] }]
+        "замок вавелл" -> [{ "label": "Wawel Castle", "queries": [{ "text": "Wawel Castle", "named": true }] }]
         Only if the message has no wish at all, such as random letters, return one step with queries "historical landmark", "museum" and "park", all named false.
         """;
 
@@ -107,14 +108,15 @@ public sealed class RouteService
         If nothing in the list fits the request, or the list is empty, locations is [].
         Then text says that you did not find this nearby and suggests something else to ask for.
         description is one short sentence about why this place fits. Do not start it with the place name.
-        rating_summary states the score out of 5 and the review count, such as "4.5 из 5, 5344 отзыва".
+        rating_summary states the score out of 5 and the review count, such as "4.5 out of 5, 5344 reviews".
         Add what visitors say only when that place's reviews line is not none, and only from that text.
         If the rating is missing, rating_summary is an empty string.
         If reviews is none, do not describe atmosphere, quality, service, reputation or a menu.
         description then only says why this type of place fits the request.
         Do not invent a rating, a review count, a price or opening hours.
         Mention a price or opening hours in description only when that place's line includes them.
-        Write text, description and rating_summary in the language of the User request text, not the language of the country.
+        Write text, description and rating_summary in English only.
+        Do this even when the User request, Current step or Upcoming steps are in another language.
         If the User request is empty, write in English.
         """;
 
@@ -212,7 +214,7 @@ public sealed class RouteService
 
         var httpClient = _httpClientFactory.CreateClient();
         var photos = await Task.WhenAll(choices.Select(choice =>
-            ResolvePhotoAsync(httpClient, places[choice.N - 1].Photo, cancellationToken)));
+            ResolvePhotosAsync(httpClient, places[choice.N - 1].Photos, cancellationToken)));
 
         return new RouteResponse
         {
@@ -221,7 +223,6 @@ public sealed class RouteService
             Locations = choices.Select((choice, index) =>
             {
                 var place = places[choice.N - 1];
-                var photo = photos[index];
                 return new Location
                 {
                     Name = place.Name,
@@ -237,9 +238,12 @@ public sealed class RouteService
                     Price = place.Price,
                     OpenNow = place.OpenNow,
                     OpeningHours = place.OpeningHours.ToList(),
-                    PhotoUrl = photo?.Url ?? "",
-                    PhotoAuthor = photo?.Author ?? "",
-                    PhotoAuthorUri = photo?.AuthorUri ?? ""
+                    Photos = photos[index].Select(photo => new LocationPhoto
+                    {
+                        Url = photo.Url,
+                        Author = photo.Author,
+                        AuthorUri = photo.AuthorUri
+                    }).ToList()
                 };
             }).ToList()
         };
@@ -550,7 +554,7 @@ public sealed class RouteService
                     place.Location.Latitude,
                     place.Location.Longitude,
                     (int)Math.Round(distance),
-                    FirstPhoto(place),
+                    PhotosOf(place),
                     place.Rating,
                     place.UserRatingCount,
                     FormatPriceLevel(place.PriceLevel),
@@ -585,6 +589,7 @@ public sealed class RouteService
         request.Content = JsonContent.Create(new
         {
             textQuery = query.Text,
+            languageCode = "en",
             pageSize = ResultsPerQuery,
             locationRestriction = new
             {
@@ -670,19 +675,39 @@ public sealed class RouteService
         return message.ToString();
     }
 
-    private static PlacePhotoRef? FirstPhoto(PlaceHit place)
+    private static List<PlacePhotoRef> PhotosOf(PlaceHit place)
     {
-        var photo = place.Photos?.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.Name));
-        if (photo?.Name is not string name)
-            return null;
+        var photos = new List<PlacePhotoRef>();
+        foreach (var photo in place.Photos ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(photo.Name))
+                continue;
 
-        var author = photo.AuthorAttributions?
-            .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.DisplayName));
-        var authorUri = author?.Uri?.Trim() ?? "";
-        if (authorUri.StartsWith("//", StringComparison.Ordinal))
-            authorUri = "https:" + authorUri;
+            var author = photo.AuthorAttributions?
+                .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.DisplayName));
+            var authorUri = author?.Uri?.Trim() ?? "";
+            if (authorUri.StartsWith("//", StringComparison.Ordinal))
+                authorUri = "https:" + authorUri;
 
-        return new PlacePhotoRef(name, author?.DisplayName?.Trim() ?? "", authorUri);
+            photos.Add(new PlacePhotoRef(photo.Name, author?.DisplayName?.Trim() ?? "", authorUri));
+            if (photos.Count == MaxPhotos)
+                break;
+        }
+
+        return photos;
+    }
+
+    private async Task<List<PhotoLink>> ResolvePhotosAsync(
+        HttpClient httpClient,
+        IReadOnlyList<PlacePhotoRef> photos,
+        CancellationToken cancellationToken)
+    {
+        if (photos.Count == 0)
+            return [];
+
+        var links = await Task.WhenAll(photos.Select(photo =>
+            ResolvePhotoAsync(httpClient, photo, cancellationToken)));
+        return links.Where(link => link is not null).Select(link => link!).ToList();
     }
 
     private async Task<PhotoLink?> ResolvePhotoAsync(
@@ -833,7 +858,7 @@ public sealed class RouteService
         double Lat,
         double Lng,
         int DistanceMeters,
-        PlacePhotoRef? Photo,
+        IReadOnlyList<PlacePhotoRef> Photos,
         double? Rating,
         int? UserRatingCount,
         string PriceLevel,

@@ -37,12 +37,5 @@ public sealed class Location
     [JsonPropertyName("opening_hours")]
     public List<string> OpeningHours { get; set; } = [];
 
-    [JsonPropertyName("photo_url")]
-    public string PhotoUrl { get; set; } = "";
-
-    [JsonPropertyName("photo_author")]
-    public string PhotoAuthor { get; set; } = "";
-
-    [JsonPropertyName("photo_author_uri")]
-    public string PhotoAuthorUri { get; set; } = "";
+    public List<LocationPhoto> Photos { get; set; } = [];
 }

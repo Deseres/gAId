@@ -48,17 +48,17 @@
 
 ```json
 {
-  "text": "Вот несколько уютных кафе рядом с вами.",
+  "text": "Here are a few cozy cafes near you.",
   "locations": [
     {
       "name": "Camelot Cafe",
       "google_place_id": "ChIJFctE3xFbFkcR681ABM8ayCQ",
       "lat": 50.063,
       "lng": 19.939,
-      "description": "Кафе рядом, умеренные цены.",
+      "description": "A nearby cafe with moderate prices.",
       "rating": 4.5,
       "user_rating_count": 5344,
-      "rating_summary": "4.5 из 5, 5344 отзыва",
+      "rating_summary": "4.5 out of 5, 5344 reviews",
       "review_summary": "",
       "price_level": "moderate",
       "price": "20–60 PLN",
@@ -72,9 +72,13 @@
         "Saturday: 9:00 AM – 12:00 AM",
         "Sunday: 9:00 AM – 11:00 PM"
       ],
-      "photo_url": "https://lh3.googleusercontent.com/place-photo",
-      "photo_author": "Jane Doe",
-      "photo_author_uri": "https://maps.google.com/maps/contrib/123"
+      "photos": [
+        {
+          "url": "https://lh3.googleusercontent.com/place-photo",
+          "author": "Jane Doe",
+          "author_uri": "https://maps.google.com/maps/contrib/123"
+        }
+      ]
     }
   ],
   "plan": []
@@ -92,20 +96,20 @@
 
 Порядок на карточке: фото, название, `rating_summary`, цена, открыто или закрыто, `description`. Часы — по раскрытию, не все семь строк сразу.
 
-- `rating_summary` — главная строка про рейтинг, на языке запроса. Обычно это «4.5 из 5, 5344 отзыва». Если у Google есть сводка отзывов, модель дописывает её сюда же. Пустую строку не показываем. Если пусто и `rating_summary`, и при этом `rating` не `null`, можно собрать запасную подпись из `rating` и `user_rating_count`.
+- `rating_summary` — главная строка про рейтинг, всегда на английском. Обычно это «4.5 out of 5, 5344 reviews». Если у Google есть сводка отзывов, модель дописывает её сюда же. Пустую строку не показываем. Если пусто и `rating_summary`, и при этом `rating` не `null`, можно собрать запасную подпись из `rating` и `user_rating_count`.
 - `review_summary` на карточку не выводим. Это сырой английский текст Google, он часто пустой, и модель уже пересказала его в `rating_summary`.
 - Цену берём из `price`, например `20–60 PLN`. Если `price` пустой, показываем `price_level`: `free`, `inexpensive`, `moderate`, `expensive`, `very expensive`. Если пусты оба, цену прячем.
 - `open_now: true` — «открыто», `false` — «закрыто». `null` — ничего не пишем.
 - `opening_hours` — до семи строк недели так, как их отдал Google, обычно по-английски. Не переводим на клиенте. Пустой массив прячем.
 - `description` показываем как есть. У места, которым бэкенд добрал список до 10, `description` и `rating_summary` могут быть пустыми. Рейтинг, цена и часы при этом всё равно приходят от Google, их показываем.
 
-В `localStorage` вместе с точкой маршрута можно класть рейтинг, цену, часы и тексты. `photo_url` по-прежнему не кладём. В `start` новые поля слать не нужно.
+В `localStorage` вместе с точкой маршрута можно класть рейтинг, цену, часы и тексты. `photos` по-прежнему не кладём. В `start` новые поля слать не нужно.
 
 - `plan` — хвост очереди. В `spot` он всегда `[]`. В `plan` там следующие шаги, без текущего. Поле есть всегда.
 - Поля фото описаны ниже, в разделе «Картинки».
 
 Как бэкенд находит места в `spot`: модель превращает `prompt` в 1–3 поисковые фразы для Google, например «хочу что-то романтичное» превращается в `romantic restaurant`, `wine bar`, `viewpoint`. Для каждой фразы она отмечает, это имя одного места или тип места. Тип ищется в 3 км от старта. Имя конкретного места, даже с опечаткой, ищется до 25 км. Модель выбирает из найденного до 10 мест и пишет `text`, `description` и `rating_summary`. Поэтому `prompt` может быть любым: на любом языке, размытым, с опечатками.
-- `text`, `description` и `rating_summary` приходят на языке запроса. Если `prompt` пустой, ответ на английском. `opening_hours` и `review_summary` остаются на языке Google.
+- `text`, `description`, `rating_summary` и `plan[].label` всегда на английском, даже если `prompt` на другом языке. `opening_hours` и `review_summary` тоже запрашиваются у Google на английском (`languageCode: en`). Названия мест остаются такими, какими их отдал Google.
 
 ## Режим plan
 
@@ -136,22 +140,22 @@
 
 ```json
 {
-  "text": "Сначала где поесть. Когда выберешь, покажу барбера, потом магазин.",
+  "text": "First, a place to eat. After you pick one, I will show a barber, then a shop.",
   "locations": [],
   "plan": [
     {
-      "label": "барбершоп",
+      "label": "barber shop",
       "queries": [{ "text": "barber shop", "named": false }]
     },
     {
-      "label": "магазин",
+      "label": "shop",
       "queries": [{ "text": "supermarket", "named": false }]
     }
   ]
 }
 ```
 
-`label` — короткая подпись на языке человека. `queries` — фразы для Google. `named: true` значит имя конкретного места, его можно искать до 25 км. `named: false` — тип места, радиус 3 км.
+`label` — короткая подпись на английском. `queries` — английские фразы для Google. `named: true` значит имя конкретного места, его можно искать до 25 км. `named: false` — тип места, радиус 3 км.
 
 Фронт сохраняет `plan` как очередь. Новое сообщение из чата эту очередь заменяет. В `spot` очередь очищается.
 
@@ -159,10 +163,10 @@
 
 ```json
 {
-  "prompt": "барбершоп",
+  "prompt": "barber shop",
   "mode": "plan",
   "step": {
-    "label": "барбершоп",
+    "label": "barber shop",
     "queries": [{ "text": "barber shop", "named": false }]
   },
   "start": {
@@ -175,7 +179,7 @@
 }
 ```
 
-`prompt` здесь — `label` шага, чтобы ответ остался на языке человека. Ищутся `step.queries`, от нового `start`. Когда очередь кончилась, клик снова шлёт пустой `prompt` и `"mode": "plan"` без `step`: дальше обычные места рядом.
+`prompt` здесь — английский `label` шага. Ищутся `step.queries`, от нового `start`. Текст ответа всё равно на английском. Когда очередь кончилась, клик снова шлёт пустой `prompt` и `"mode": "plan"` без `step`: дальше обычные места рядом.
 
 ### Ошибки
 
@@ -187,17 +191,19 @@
 
 ## Картинки
 
-Бэкенд не присылает файл. У каждой локации в ответе три строки:
+Бэкенд не присылает файл. У каждой локации в ответе массив `photos`, до 10 снимков — столько, сколько вернул Google. Порядок как у Google: первый снимок обычно главный.
 
-- `photo_url` — адрес картинки на `lh3.googleusercontent.com`. Его ставят в `<img src>`. Браузер скачивает фото сам, напрямую у Google.
-- `photo_author` — имя автора.
-- `photo_author_uri` — страница автора.
+У каждого элемента три поля:
 
-Если фото нет, все три поля приходят пустыми. Карточку всё равно показываем, просто без картинки. То же самое, если `<img>` не загрузился: прячем картинку, место остаётся.
+- `url` — адрес картинки на `lh3.googleusercontent.com`. Его ставят в `<img src>`. Браузер скачивает фото сам, напрямую у Google.
+- `author` — имя автора.
+- `author_uri` — страница автора.
 
-Рядом с фото нужно показать автора. Это требование Google. Если `photo_author` пустой, подпись не нужна. Если `photo_author_uri` не пустой, имя должно быть ссылкой на него.
+Если фото нет, `photos` приходит пустым. Карточку всё равно показываем, просто без картинки. То же самое, если `<img>` не загрузился: прячем эту картинку, место и остальные фото остаются.
 
-`photo_url` живёт недолго. В `localStorage` его не кладём. После перезагрузки старая ссылка может не открыться. Новый запрос `POST /api/route` приносит свежие ссылки.
+Рядом с каждым фото нужно показать его автора. Это требование Google. Если `author` пустой, подпись не нужна. Если `author_uri` не пустой, имя должно быть ссылкой на него.
+
+`url` живёт недолго. В `localStorage` массив `photos` не кладём. После перезагрузки старая ссылка может не открыться. Новый запрос `POST /api/route` приносит свежие ссылки.
 
 В `start` эти поля слать не нужно. Для старта по-прежнему хватает `name`, `google_place_id`, `lat`, `lng`.
 
@@ -220,9 +226,13 @@ type Place = {
   price?: string;
   open_now?: boolean | null;
   opening_hours?: string[];
-  photo_url?: string;
-  photo_author?: string;
-  photo_author_uri?: string;
+  photos?: PlacePhoto[];
+};
+
+type PlacePhoto = {
+  url: string;
+  author: string;
+  author_uri: string;
 };
 
 type PlanQuery = {
