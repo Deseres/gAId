@@ -347,9 +347,9 @@ const handleStartSelect = useCallback((place: Place) => {
           />
         </div>
 
-        <div className={`absolute bottom-0 w-full bg-white/95 backdrop-blur-xl transition-all duration-500 ease-in-out shadow-[0_-10px_50px_rgba(0,0,0,0.1)] flex flex-col z-10
-          ${isPanelExpanded ? (uiState === 'slider' ? 'h-[50dvh]' : 'max-h-[85dvh] h-[85dvh]') : 'max-h-[15dvh] h-[15dvh]'} rounded-t-[2rem]
-        `}>
+<div className={`absolute bottom-0 w-full md:max-w-md md:left-1/2 md:-translate-x-1/2 bg-white/95 backdrop-blur-xl transition-all duration-500 ease-in-out shadow-[0_-10px_50px_rgba(0,0,0,0.1)] flex flex-col z-10
+  ${isPanelExpanded ? (uiState === 'slider' ? 'h-[50dvh]' : 'max-h-[85dvh] h-[85dvh]') : 'max-h-[15dvh] h-[15dvh]'} rounded-t-[2rem]
+`}>
           
           {uiState === 'slider' && isPanelExpanded && (
             <button 
@@ -577,8 +577,8 @@ const handleStartSelect = useCallback((place: Place) => {
         )}
 
         {isRouteManagerOpen && (
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-[100] flex flex-col justify-end">
-            <div className="bg-white w-full h-[75dvh] rounded-t-[2rem] shadow-2xl flex flex-col animate-in slide-in-from-bottom-full duration-300">
+  <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-[100] flex flex-col justify-end md:items-center">
+    <div className="bg-white w-full md:max-w-md h-[75dvh] rounded-t-[2rem] shadow-2xl flex flex-col animate-in slide-in-from-bottom-full duration-300">
               <div className="w-full flex justify-center pt-5 pb-3">
                  <div className="w-16 h-1.5 bg-gray-300 rounded-full"></div>
               </div>
